@@ -19,7 +19,7 @@ st.caption("CSV stile Yahoo → statistiche, alert e suggerimenti basati su rego
 with st.sidebar:
     st.header("⚙️ Impostazioni")
     csv_file = st.file_uploader("Carica CSV del portafoglio", type=["csv"])
-    csv_path = st.text_input("...oppure percorso locale", value="sample.csv")
+    csv_path = st.text_input("...oppure percorso locale", value="portfolio.csv")
     use_live = st.checkbox("Usa prezzi live (yfinance)", value=True)
     upper = st.number_input("Soglia UPPER (%)", value=12.0, step=1.0)
     lower = st.number_input("Soglia LOWER (%)", value=8.0, step=1.0)
