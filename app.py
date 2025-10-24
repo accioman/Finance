@@ -16,7 +16,7 @@ st.caption("Aggiornamento frequente; i dati possono essere in differita a second
 with st.sidebar:
     st.header("⚙️ Impostazioni")
     uploaded = st.file_uploader("Carica CSV del portafoglio", type=["csv"])
-    st.session_state.csv_path = st.text_input("...oppure percorso locale", value=st.session_state.csv_path or "sample.csv")
+    st.session_state.csv_path = st.text_input("...oppure percorso locale", value=st.session_state.csv_path or "portfolio.csv")
     st.session_state.use_live = st.checkbox("Usa prezzi live (yfinance)", value=st.session_state.use_live)
     st.session_state.upper = st.number_input("Soglia UPPER (%)", value=float(st.session_state.upper), step=1.0)
     st.session_state.lower = st.number_input("Soglia LOWER (%)", value=float(st.session_state.lower), step=1.0)
