@@ -1,10 +1,13 @@
-# pages/2_Posizioni.py — Tabella posizioni in EUR, filtri, download
+# pages/2_Posizioni.py — Tabella posizioni in EUR con autorefresh locale
 from __future__ import annotations
+import time
 import streamlit as st
 import pandas as pd
-from src.utils import require_data
+from src.utils import require_data, reload_portfolio_from_state
 
 st.set_page_config(page_title="Posizioni (EUR)", page_icon="📑", layout="wide")
+
+reload_portfolio_from_state()
 require_data()
 
 st.title("📑 Posizioni (EUR)")
@@ -33,10 +36,6 @@ csv_bytes = df_filt[cols].to_csv(index=False).encode()
 st.download_button("⬇️ Scarica CSV filtrato (EUR)", data=csv_bytes,
                    file_name="posizioni_eur_filtrate.csv", mime="text/csv")
 
-st.markdown("___")
-st.subheader("ℹ️ Note")
-st.markdown("""
-- I valori sono calcolati in EUR.
-- Filtra le posizioni usando i campi in alto.   
-- Scarica il CSV delle posizioni filtrate usando il pulsante di download.
-""")
+if st.session_state.auto_refresh:
+    time.sleep(int(st.session_state.refresh_secs))
+    st.rerun()

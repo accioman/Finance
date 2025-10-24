@@ -1,10 +1,13 @@
-# pages/3_Analisi_tecnica.py — Price chart + SMA/EMA/RSI/MACD + segnali
+# pages/3_Analisi_tecnica.py — Analisi + autorefresh locale
 from __future__ import annotations
+import time
 import streamlit as st
 from src.tech import get_history, add_indicators, signals_from_indicators
-from src.utils import require_data, glossary_md
+from src.utils import require_data, reload_portfolio_from_state, glossary_md
 
 st.set_page_config(page_title="Analisi tecnica", page_icon="📈", layout="wide")
+
+reload_portfolio_from_state()
 require_data()
 
 st.title("📈 Analisi tecnica")
@@ -29,27 +32,30 @@ with st.expander("Parametri indicatori", expanded=False):
 hist = get_history(symbol, period=period, interval=interval)
 if hist.empty:
     st.warning("Dati storici non disponibili per questo simbolo.")
-    st.stop()
+else:
+    df_ind = add_indicators(hist, sma=int(sma), ema=int(ema), rsi_len=int(rsi_len),
+                            macd_fast=int(macd_fast), macd_slow=int(macd_slow), macd_signal=int(macd_signal))
 
-df_ind = add_indicators(hist, sma=int(sma), ema=int(ema), rsi_len=int(rsi_len),
-                        macd_fast=int(macd_fast), macd_slow=int(macd_slow), macd_signal=int(macd_signal))
+    st.subheader("Prezzo (Close, SMA, EMA)")
+    st.line_chart(df_ind[["Close","SMA","EMA"]].dropna(), height=320, width="stretch")
 
-st.subheader("Prezzo (Close, SMA, EMA)")
-st.line_chart(df_ind[["Close","SMA","EMA"]].dropna(), height=320, width="stretch")
+    st.subheader("RSI")
+    st.line_chart(df_ind[["RSI"]].dropna(), height=200, width="stretch")
 
-st.subheader("RSI")
-st.line_chart(df_ind[["RSI"]].dropna(), height=200, width="stretch")
+    st.subheader("MACD")
+    st.line_chart(df_ind[["MACD","MACD_signal","MACD_hist"]].dropna(), height=200, width="stretch")
 
-st.subheader("MACD")
-st.line_chart(df_ind[["MACD","MACD_signal","MACD_hist"]].dropna(), height=200, width="stretch")
+    if show_volume and "Volume" in df_ind.columns:
+        st.subheader("Volumi")
+        st.bar_chart(df_ind[["Volume"]], height=180, width="stretch")
 
-if show_volume and "Volume" in df_ind.columns:
-    st.subheader("Volumi")
-    st.bar_chart(df_ind[["Volume"]], height=180, width="stretch")
-
-st.subheader("Segnali")
-for txt in signals_from_indicators(df_ind):
-    st.info(txt)
+    st.subheader("Segnali")
+    for txt in signals_from_indicators(df_ind):
+        st.info(txt)
 
 with st.expander("Glossario acronimi"):
     st.markdown(glossary_md(), unsafe_allow_html=True)
+
+if st.session_state.auto_refresh:
+    time.sleep(int(st.session_state.refresh_secs))
+    st.rerun()
