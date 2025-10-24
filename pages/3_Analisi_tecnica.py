@@ -3,10 +3,11 @@ from __future__ import annotations
 import time
 import streamlit as st
 from src.tech import get_history, add_indicators, signals_from_indicators
-from src.utils import require_data, reload_portfolio_from_state, glossary_md
+from src.utils import ensure_state, require_data, reload_portfolio_from_state, glossary_md
 
 st.set_page_config(page_title="Analisi tecnica", page_icon="📈", layout="wide")
 
+ensure_state()
 reload_portfolio_from_state()
 require_data()
 
@@ -37,17 +38,17 @@ else:
                             macd_fast=int(macd_fast), macd_slow=int(macd_slow), macd_signal=int(macd_signal))
 
     st.subheader("Prezzo (Close, SMA, EMA)")
-    st.line_chart(df_ind[["Close","SMA","EMA"]].dropna(), height=320, width="stretch")
+    st.line_chart(df_ind[["Close","SMA","EMA"]].dropna(), height=320, use_container_width=True)
 
     st.subheader("RSI")
-    st.line_chart(df_ind[["RSI"]].dropna(), height=200, width="stretch")
+    st.line_chart(df_ind[["RSI"]].dropna(), height=200, use_container_width=True)
 
     st.subheader("MACD")
-    st.line_chart(df_ind[["MACD","MACD_signal","MACD_hist"]].dropna(), height=200, width="stretch")
+    st.line_chart(df_ind[["MACD","MACD_signal","MACD_hist"]].dropna(), height=200, use_container_width=True)
 
     if show_volume and "Volume" in df_ind.columns:
         st.subheader("Volumi")
-        st.bar_chart(df_ind[["Volume"]], height=180, width="stretch")
+        st.bar_chart(df_ind[["Volume"]], height=180, use_container_width=True)
 
     st.subheader("Segnali")
     for txt in signals_from_indicators(df_ind):

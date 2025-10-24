@@ -8,10 +8,11 @@ import streamlit as st
 from src.risk import risk_metrics_from_history, correlation_matrix
 from src.tech import get_history
 from src.stats import compute_stats_tables
-from src.utils import require_data, reload_portfolio_from_state
+from src.utils import ensure_state, require_data, reload_portfolio_from_state
 
 st.set_page_config(page_title="Report / Export", page_icon="📤", layout="wide")
 
+ensure_state()
 reload_portfolio_from_state()
 require_data()
 
@@ -30,7 +31,7 @@ corr = correlation_matrix(syms, period="3mo", interval="1d")
 if corr.empty:
     st.info("Correlazioni non disponibili (storico insufficiente).")
 else:
-    st.dataframe(corr, width="stretch", height=360)
+    st.dataframe(corr, use_container_width=True, height=360)
 
 st.subheader("⚠️ Metriche di rischio per simbolo (90 giorni)")
 rows = []
@@ -40,11 +41,11 @@ for s in syms:
         rows.append({"Symbol": s, **risk_metrics_from_history(h)})
 risk_df = pd.DataFrame(rows)
 if not risk_df.empty:
-    st.dataframe(risk_df, width="stretch")
+    st.dataframe(risk_df, use_container_width=True)
 else:
     st.info("Storico insufficiente per calcolare le metriche.")
 
-# Export (come già sistemato prima con xlsxwriter/openpyxl o zip)
+# Export (xlsx o zip fallback)
 try:
     import xlsxwriter
     engine = "xlsxwriter"
@@ -70,7 +71,6 @@ if engine:
                            file_name="report_portafoglio.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 else:
-    # Fallback ZIP CSV
     import zipfile
     with io.BytesIO() as zbuf:
         with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:

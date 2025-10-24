@@ -5,11 +5,12 @@ import streamlit as st
 from src.stats import compute_stats_tables
 from src.alerts import find_alerts
 from src.suggestions import derive_suggestions
-from src.utils import require_data, reload_portfolio_from_state
+from src.utils import ensure_state, require_data, reload_portfolio_from_state
 
 st.set_page_config(page_title="Panoramica (EUR)", page_icon="💶", layout="wide")
 
 # Ricarica sempre dati prima di disegnare
+ensure_state()
 reload_portfolio_from_state()
 require_data()
 
@@ -33,10 +34,10 @@ left, right = st.columns([2, 1])
 
 with left:
     st.subheader("Allocazione (Top) — EUR")
-    st.dataframe(tables["by_weight"], width="stretch", height=360)
+    st.dataframe(tables["by_weight"], use_container_width=True, height=360)
 
     st.subheader("P/L peggiore → migliore — %")
-    st.dataframe(tables["by_pl"], width="stretch", height=360)
+    st.dataframe(tables["by_pl"], use_container_width=True, height=360)
 
 with right:
     st.subheader("🔔 Alerts (calcolati in EUR)")
@@ -46,10 +47,12 @@ with right:
     else:
         if not up.empty:
             st.write("**Soglie UPPER superate**")
-            st.dataframe(up[["Symbol","PL_pct","Price EUR","Purchase EUR","Quantity"]], width="stretch")
+            st.dataframe(up[["Symbol","PL_pct","Price EUR","Purchase EUR","Quantity"]],
+                         use_container_width=True)
         if not lo.empty:
             st.write("**Soglie LOWER superate**")
-            st.dataframe(lo[["Symbol","PL_pct","Price EUR","Purchase EUR","Quantity"]], width="stretch")
+            st.dataframe(lo[["Symbol","PL_pct","Price EUR","Purchase EUR","Quantity"]],
+                         use_container_width=True)
 
     st.subheader("💡 Suggerimenti")
     for hint in derive_suggestions(df, st.session_state.upper, st.session_state.lower):
@@ -57,8 +60,8 @@ with right:
 
 st.subheader("Grafici rapidi (EUR)")
 det = tables["detail"].copy().sort_values("Value", ascending=False)
-st.bar_chart(det.set_index("Symbol")["Value"], height=240, width="stretch")
-st.bar_chart(det.set_index("Symbol")["PL_pct"].sort_values(), height=240, width="stretch")
+st.bar_chart(det.set_index("Symbol")["Value"], height=240, use_container_width=True)
+st.bar_chart(det.set_index("Symbol")["PL_pct"].sort_values(), height=240, use_container_width=True)
 
 # AUTORERUN locale
 if st.session_state.auto_refresh:

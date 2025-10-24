@@ -1,18 +1,31 @@
 from __future__ import annotations
-import streamlit as st
+import io
+import tempfile
 from pathlib import Path
+import streamlit as st
 from src.loader import load_yahoo_csv
 from src.pricing import enrich_with_prices
 
 def ensure_state():
-    st.session_state.setdefault("csv_path", None)
+    # Sorgente dati
+    st.session_state.setdefault("csv_source", "path")   # "uploaded_bytes" | "path"
+    st.session_state.setdefault("csv_path", None)       # usato se csv_source == "path"
+    st.session_state.setdefault("uploaded_bytes", None) # bytes dell'upload
+    st.session_state.setdefault("uploaded_name", "")    # nome originale
+    st.session_state.setdefault("_last_tmp_csv", None)  # debug: ultimo temp
+
+    # Impostazioni app
     st.session_state.setdefault("use_live", True)
     st.session_state.setdefault("upper", 12.0)
     st.session_state.setdefault("lower", 8.0)
     st.session_state.setdefault("auto_refresh", True)
     st.session_state.setdefault("refresh_secs", 5)
+
+    # Dati calcolati
     st.session_state.setdefault("df", None)
     st.session_state.setdefault("cash_total", 0.0)
+
+    # Stato caricamento
     st.session_state.setdefault("last_loaded_ok", False)
     st.session_state.setdefault("load_error", "")
 
@@ -22,20 +35,52 @@ def require_data():
         st.error("Dati non caricati. Torna alla Home (app.py) e seleziona un CSV.")
         st.stop()
 
+def _load_from_uploaded_bytes():
+    """
+    Prova a caricare il CSV direttamente dai byte in memoria.
+    Se load_yahoo_csv richiede un path, fa fallback a un file temporaneo sicuro.
+    Ritorna (df, cash, label_per_ui)
+    """
+    data: bytes | None = st.session_state.get("uploaded_bytes")
+    if not data:
+        raise FileNotFoundError("Nessun upload disponibile in sessione.")
+
+    # 1) Tentativo: file-like in memoria
+    try:
+        buf = io.BytesIO(data)
+        df, cash = load_yahoo_csv(buf)  # funziona se accetta file-like
+        label = st.session_state.get("uploaded_name") or "upload.csv"
+        return df, cash, label
+    except TypeError:
+        # 2) Fallback: salvataggio in temp (permessi garantiti in prod)
+        suffix = Path(st.session_state.get("uploaded_name") or "upload.csv").suffix or ".csv"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        st.session_state._last_tmp_csv = tmp_path
+        df, cash = load_yahoo_csv(tmp_path)
+        return df, cash, st.session_state.get("uploaded_name") or tmp_path
+
 def reload_portfolio_from_state():
     """
-    Ricarica SEMPRE dati e prezzi in EUR usando csv_path/use_live dalla sessione.
-    Da chiamare all'inizio di OGNI pagina, così anche le pagine interne aggiornano i dati.
+    Ricarica SEMPRE dati e prezzi in EUR usando csv_source/use_live dalla sessione.
+    Da chiamare all'inizio di OGNI pagina (Panoramica, Posizioni, ecc.).
     """
-    path = st.session_state.csv_path
-    if not path:
-        st.session_state.last_loaded_ok = False
-        st.session_state.load_error = "Percorso CSV non impostato."
-        return
-
     try:
-        df, cash = load_yahoo_csv(path)
-        df = enrich_with_prices(df, use_live=st.session_state.use_live)  # calcolo EUR
+        source = st.session_state.get("csv_source", "path")
+
+        if source == "uploaded_bytes":
+            df, cash, _ = _load_from_uploaded_bytes()
+        else:
+            path = st.session_state.get("csv_path")
+            if not path:
+                raise FileNotFoundError("Percorso CSV non impostato.")
+            df, cash = load_yahoo_csv(path)
+
+        # Arricchimento prezzi (EUR / live o cache)
+        df = enrich_with_prices(df, use_live=st.session_state.get("use_live", True))
+
+        # Stato condiviso
         st.session_state.df = df
         st.session_state.cash_total = cash
         st.session_state.last_loaded_ok = True
