@@ -28,11 +28,11 @@ Sono accettate le righe di cassa `$$CASH_TX` (somma su `Quantity`).
 ## Esempi
 - Esecuzione singola con grafici:
 ```bash
-python app.py --csv sample.csv --once --use-live-prices --plot
+python app.py --csv portfolio.csv --once --use-live-prices --plot
 ```
 - Scheduler ogni 15 minuti:
 ```bash
-python app.py --csv sample.csv --schedule 15 --upper 12 --lower 8
+python app.py --csv portfolio.csv --schedule 15 --upper 12 --lower 8
 ```
 
 > Nota: Solo informativo/educativo. Non è consulenza finanziaria.
