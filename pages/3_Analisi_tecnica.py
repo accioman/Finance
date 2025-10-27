@@ -147,11 +147,19 @@ for col,label in [("KC_low","KC low"),("KC_up","KC up"),("KC_mid","KC mid")]:
 
 price_long = pd.concat(series_frames, ignore_index=True)
 
-# linea price/MA con legenda
+legend_opts = alt.Legend(
+    title="Serie",
+    orient="bottom",           # niente tagli a destra
+    direction="horizontal",    # su una riga (o più con columns)
+    columns=4,                 # adatta al numero di serie
+    labelLimit=0,              # NON troncare i nomi
+    symbolSize=120
+)
+
 price_lines = alt.Chart(price_long).mark_line().encode(
     x=alt.X("dt:T", title=""),
     y=alt.Y("value:Q", title="Prezzo"),
-    color=alt.Color("series:N", title="Serie")
+    color=alt.Color("series:N", legend=legend_opts)
 )
 
 # Bollinger band (senza legenda; è una fascia visiva)
@@ -159,7 +167,9 @@ bb_layer = alt.Chart(df_plot).mark_area(opacity=0.15).encode(
     x="dt:T", y="BB_low:Q", y2="BB_up:Q"
 ) if show_bb and all(c in df_plot.columns for c in ["BB_low","BB_up"]) else None
 
-price_chart = (bb_layer + price_lines).properties(height=320).interactive() if bb_layer else price_lines.properties(height=320).interactive()
+price_chart = price_chart.properties(height=320).configure(
+    padding={"top": 5, "left": 5, "right": 5, "bottom": 60}  # più spazio sotto
+)
 st.altair_chart(price_chart, use_container_width=True)
 
 # =========
