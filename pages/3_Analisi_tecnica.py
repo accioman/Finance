@@ -1,16 +1,17 @@
-# pages/3_Analisi_tecnica.py — robust/failsafe + compat width + safe mode + diagnostica
+# pages/3_Analisi_tecnica.py — robust/failsafe + live price overlay + compat width + safe mode + diagnostica
 from __future__ import annotations
 import time
 import pandas as pd
 import numpy as np
 import altair as alt
 import streamlit as st
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from src.tech import get_history, add_indicators, summarize_signals, latest_table
-from src.utils import ensure_state, require_data, reload_portfolio_from_state, glossary_md
+from src.utils import ensure_state, require_data, reload_portfolio_from_state, render_glossary_tabs
 from src import ui_compat as ui
+import yfinance as yf
 
-# Altair: disattiva max_rows, renderer snello
+# Altair snello
 alt.data_transformers.disable_max_rows()
 try:
     alt.renderers.set_embed_options(actions=False)
@@ -19,18 +20,23 @@ except Exception:
 
 st.set_page_config(page_title="Analisi tecnica", page_icon="📈", layout="wide")
 
-# ------------- Stato / dati base -------------
+# ---------------- Stato / dati base ----------------
 ensure_state()
 reload_portfolio_from_state()
 require_data()
 
 st.title("📈 Analisi tecnica (avanzata)")
 
-# Toggle Safe Mode (evita Altair se crea problemi)
+# ---------- Sidebar ----------
 safe_mode = st.sidebar.toggle(
     "Safe Mode (fallback grafici semplici)",
     value=False,
     help="Se i grafici non compaiono o vedi schermo nero, attiva questo."
+)
+use_live = st.sidebar.toggle(
+    "Usa prezzo live (se disponibile)",
+    value=True,
+    help="Sovrappone il prezzo in tempo reale ai grafici/KPI."
 )
 
 # ----------------- Controlli -----------------
@@ -68,16 +74,16 @@ with st.expander("Parametri indicatori", expanded=False):
 
     add_ema8 = st.checkbox("Aggiungi EMA 8", value=True)
 
-# Downsample compatibile con timeframe
+# ------ Downsample compatibile ------
 def _rules_for_interval(iv: str) -> List[str]:
     iv = iv.lower()
     if iv == "1d":
-        return ["1D", "W", "2W", "M", "Q"]
+        return ["1D","W","2W","M","Q"]
     if iv == "1h":
-        return ["1H", "4H", "1D", "W"]
-    if iv in ("30m", "15m"):
-        return ["15min", "30min", "1H", "4H", "1D"]
-    return ["1D", "W", "M"]
+        return ["1H","4H","1D","W"]
+    if iv in ("30m","15m"):
+        return ["15min","30min","1H","4H","1D"]
+    return ["1D","W","M"]
 
 with st.expander("Prestazioni e downsample", expanded=True):
     d1, d2, d3 = st.columns([1,1,2])
@@ -93,7 +99,7 @@ except Exception as e:
     st.stop()
 
 if hist is None or hist.empty:
-    st.warning("Dati storici non disponibili per questo simbolo/intervallo (ticker delistato o borsa chiusa senza dati intraday). Prova a cambiare periodo/intervallo.")
+    st.warning("Dati storici non disponibili per questo simbolo/intervallo (delistato o intraday assente a mercato chiuso). Prova a cambiare periodo/intervallo.")
     st.stop()
 
 sma_list = [int(x) for x in sma_str.replace(";", ",").split(",") if x.strip().isdigit()]
@@ -119,7 +125,7 @@ except Exception as e:
     st.error(f"Errore nel calcolo indicatori: {type(e).__name__}: {e}")
     st.stop()
 
-# Normalizza la colonna tempo
+# ------------ Normalizza tempo ------------
 try:
     df_plot = (
         df_ind.reset_index().rename(columns={"Date": "dt"})
@@ -127,9 +133,7 @@ try:
         else df_ind.reset_index().rename(columns={df_ind.index.name or "index": "dt"})
     )
     df_plot["dt"] = pd.to_datetime(df_plot["dt"], errors="coerce").dt.tz_localize(None)
-    df_plot = df_plot.dropna(subset=["dt"]).sort_values("dt")
-    # Dedup timestamp (tieni l'ultimo)
-    df_plot = df_plot.drop_duplicates(subset=["dt"], keep="last")
+    df_plot = df_plot.dropna(subset=["dt"]).sort_values("dt").drop_duplicates(subset=["dt"], keep="last")
 except Exception as e:
     st.error(f"Errore nella preparazione temporale: {type(e).__name__}: {e}")
     st.stop()
@@ -138,7 +142,74 @@ if df_plot.empty:
     st.error("Problema sul campo data: impossibile costruire la serie temporale.")
     st.stop()
 
-# ----------------- Downsample robusto -----------------
+# ------------ Live price helpers ------------
+@st.cache_data(show_spinner=False, ttl=10)
+def _get_live_from_history(symbol: str) -> Tuple[Optional[pd.Timestamp], Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """
+    Prova a ottenere l'ultimo minuto (OHLCV) dal feed 1m.
+    Ritorna (ts, o, h, l, c, v) in tz-naive.
+    """
+    try:
+        tkr = yf.Ticker(symbol)
+        h1m = tkr.history(period="1d", interval="1m", auto_adjust=False)
+        if h1m is None or h1m.empty:
+            return (None, None, None, None, None, None)
+        row = h1m.iloc[-1]
+        ts = pd.to_datetime(h1m.index[-1]).tz_localize(None)
+        o = float(row.get("Open", np.nan))
+        h = float(row.get("High", np.nan))
+        l = float(row.get("Low", np.nan))
+        c = float(row.get("Close", np.nan))
+        v = float(row.get("Volume", np.nan)) if "Volume" in row else np.nan
+        if np.isnan(c):
+            return (None, None, None, None, None, None)
+        return (ts, o, h, l, c, v)
+    except Exception:
+        return (None, None, None, None, None, None)
+
+@st.cache_data(show_spinner=False, ttl=10)
+def _get_live_fallback(symbol: str) -> Tuple[Optional[pd.Timestamp], Optional[float]]:
+    """
+    Fallback: prova fast_info.last_price come sola Close live.
+    """
+    try:
+        tkr = yf.Ticker(symbol)
+        lp = getattr(tkr.fast_info, "last_price", None)
+        if lp is None:
+            # alcuni simboli espongono regularMarketPrice nell'attributo 'info'
+            info = getattr(tkr, "info", {}) or {}
+            lp = info.get("regularMarketPrice")
+        if lp is None:
+            return (None, None)
+        return (pd.Timestamp.utcnow().tz_localize(None), float(lp))
+    except Exception:
+        return (None, None)
+
+def get_live_layer_df(dfp: pd.DataFrame, symbol: str) -> Tuple[Optional[pd.DataFrame], Optional[float], Optional[pd.Timestamp]]:
+    """
+    Costruisce un piccolo df per il layer 'Live' (linea + punto).
+    Non altera gli indicatori: è solo overlay grafico/KPI.
+    """
+    if dfp.empty:
+        return None, None, None
+    last_dt = dfp["dt"].iloc[-1]
+    # 1) prova OHLCV 1m
+    ts, o, h, l, c, v = _get_live_from_history(symbol)
+    if ts is not None and c is not None and ts >= last_dt:
+        live_df = pd.DataFrame(
+            {"dt":[last_dt, ts], "value":[float(dfp["Close"].iloc[-1]), float(c)], "series":["Live","Live"]}
+        )
+        return live_df, float(c), ts
+    # 2) fallback: solo prezzo
+    ts2, c2 = _get_live_fallback(symbol)
+    if ts2 is not None and c2 is not None and ts2 >= last_dt:
+        live_df = pd.DataFrame(
+            {"dt":[last_dt, ts2], "value":[float(dfp["Close"].iloc[-1]), float(c2)], "series":["Live","Live"]}
+        )
+        return live_df, float(c2), ts2
+    return None, None, None
+
+# ----------------- Downsample -----------------
 def _choose_auto_rule(curr_interval: str, n_points: int) -> Optional[str]:
     if n_points <= 12000:
         return None
@@ -152,7 +223,7 @@ def _choose_auto_rule(curr_interval: str, n_points: int) -> Optional[str]:
         if n_points > 80000: return "1D"
         if n_points > 40000: return "4H"
         return "1H"
-    if n_points > 5000:  # daily
+    if n_points > 5000:
         return "W"
     return None
 
@@ -165,8 +236,7 @@ def _downsample_for_plot(dfin: pd.DataFrame, rule: str) -> pd.DataFrame:
     agg: Dict[str, str] = {}
     for c, how in (("Open","first"),("High","max"),("Low","min"),("Close","last")):
         if c in dfi.columns: agg[c] = how
-    if "Volume" in dfi.columns:
-        agg["Volume"] = "sum"
+    if "Volume" in dfi.columns: agg["Volume"] = "sum"
     for c in [c for c in dfi.columns if c not in agg and c != "dt"]:
         agg[c] = "last"
     dfo = dfi.resample(rule).agg(agg)
@@ -195,25 +265,33 @@ else:
 
 n_plot = len(dfp)
 
-# ----------------- KPI -----------------
+# ----------------- KPI (con live) -----------------
+live_df, live_price, live_ts = (None, None, None)
+if use_live:
+    live_df, live_price, live_ts = get_live_layer_df(dfp, symbol)
+
 try:
-    last = dfp.iloc[-1]
-    close = float(last["Close"])
-    prev = float(dfp["Close"].iloc[-2]) if len(dfp) >= 2 else close
-    day_pl = (close - prev) / prev * 100 if prev else 0
-    dist_high = float(last.get("dist_from_52w_high_%", float("nan")))
-    dist_low  = float(last.get("dist_from_52w_low_%", float("nan")))
-    squeeze_on = bool(last.get("SQUEEZE_ON", False))
-    squeeze_up = bool(last.get("SQUEEZE_OFF_UP", False))
-    squeeze_dn = bool(last.get("SQUEEZE_OFF_DOWN", False))
+    last_close = float(dfp["Close"].iloc[-1])
+    prev_close = float(dfp["Close"].iloc[-2]) if len(dfp) >= 2 else last_close
+    price_for_kpi = live_price if (use_live and live_price is not None) else last_close
+    day_pl = (price_for_kpi - prev_close) / prev_close * 100 if prev_close else 0.0
+
+    last_row = dfp.iloc[-1]
+    dist_high = float(last_row.get("dist_from_52w_high_%", float("nan")))
+    dist_low  = float(last_row.get("dist_from_52w_low_%", float("nan")))
+    squeeze_on = bool(last_row.get("SQUEEZE_ON", False))
+    squeeze_up = bool(last_row.get("SQUEEZE_OFF_UP", False))
+    squeeze_dn = bool(last_row.get("SQUEEZE_OFF_DOWN", False))
 
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Prezzo", f"{close:.2f}")
+    k1.metric("Prezzo", f"{price_for_kpi:.2f}")
     k2.metric("Day Δ%", f"{day_pl:.2f}%")
     k3.metric("Dist. 52W High", f"{dist_high:.1f}%" if pd.notna(dist_high) else "—")
     k4.metric("Dist. 52W Low", f"{dist_low:.1f}%" if pd.notna(dist_low) else "—")
     k5.metric("Squeeze", "ON" if squeeze_on else ("UP" if squeeze_up else ("DOWN" if squeeze_dn else "—")))
-    st.caption(f"📉 Punti raw: {n_raw:,} → grafico: {n_plot:,}" + (f" (rule: {chosen_rule})" if chosen_rule else ""))
+    extra = f" (rule: {chosen_rule})" if chosen_rule else ""
+    live_note = f" | Live @ {live_ts}" if (use_live and live_price is not None and live_ts is not None) else ""
+    st.caption(f"📉 Punti raw: {n_raw:,} → grafico: {n_plot:,}{extra}{live_note}")
 except Exception as e:
     st.warning(f"KPI non disponibili: {type(e).__name__}: {e}")
 
@@ -222,7 +300,6 @@ axis_x = alt.Axis(title="", labelAngle=-30, labelFlush=False, labelOverlap=True)
 legend_bottom = alt.Legend(title=None, orient="bottom", direction="horizontal",
                            columns=6, labelLimit=1000, symbolSize=120)
 
-# ---- helpers serie/layer
 def _prepare_price_long(dfin: pd.DataFrame, sma_list: List[int], ema_list: List[int]) -> pd.DataFrame:
     frames = []
     def _sf(df: pd.DataFrame, col: str, label: str):
@@ -230,17 +307,12 @@ def _prepare_price_long(dfin: pd.DataFrame, sma_list: List[int], ema_list: List[
             sr = df[["dt", col]].copy().rename(columns={col: "value"}).assign(series=label)
             if sr["value"].notna().any():
                 frames.append(sr)
-
     _sf(dfin, "Close", "Close")
     for n in sma_list: _sf(dfin, f"SMA_{n}", f"SMA {n}")
     for n in ema_list: _sf(dfin, f"EMA_{n}", f"EMA {n}")
-
     if not frames:
         frames = [dfin[["dt","Close"]].rename(columns={"Close":"value"}).assign(series="Close")]
-
     out = pd.concat(frames, ignore_index=True)
-
-    # pulizia forte
     out = out.dropna(subset=["dt", "value"])
     out["value"] = pd.to_numeric(out["value"], errors="coerce")
     out = out.dropna(subset=["value"])
@@ -249,7 +321,7 @@ def _prepare_price_long(dfin: pd.DataFrame, sma_list: List[int], ema_list: List[
     out = out.dropna(subset=["dt"]).sort_values("dt")
     return out
 
-def _price_chart_full(dfin: pd.DataFrame, price_long: pd.DataFrame):
+def _price_chart_full(dfin: pd.DataFrame, price_long: pd.DataFrame, live_df: Optional[pd.DataFrame]):
     price_lines = alt.Chart(price_long).mark_line().encode(
         x=alt.X("dt:T", axis=axis_x),
         y=alt.Y("value:Q", title="Prezzo"),
@@ -258,13 +330,11 @@ def _price_chart_full(dfin: pd.DataFrame, price_long: pd.DataFrame):
                  alt.Tooltip("series:N", title="Serie"),
                  alt.Tooltip("value:Q", title="Valore", format=".2f")]
     )
-
     layers = []
     if show_kc and {"KC_low","KC_up"}.issubset(dfin.columns):
         layers.append(alt.Chart(dfin).mark_area(opacity=0.12).encode(x="dt:T", y="KC_low:Q", y2="KC_up:Q"))
     if show_bb and {"BB_low","BB_up"}.issubset(dfin.columns):
         layers.append(alt.Chart(dfin).mark_area(opacity=0.15).encode(x="dt:T", y="BB_low:Q", y2="BB_up:Q"))
-
     if use_candles and {"Open","High","Low","Close"}.issubset(dfin.columns):
         up = alt.value("#16a34a"); dn = alt.value("#ef4444")
         wick = alt.Chart(dfin).mark_rule().encode(
@@ -280,10 +350,22 @@ def _price_chart_full(dfin: pd.DataFrame, price_long: pd.DataFrame):
             x="dt:T", y="Open:Q", y2="Close:Q",
             color=alt.condition("datum.Open <= datum.Close", up, dn)
         )
-        chart = alt.layer(*(layers + [wick, body, price_lines]))
+        layers += [wick, body, price_lines]
     else:
-        chart = alt.layer(*(layers + [price_lines]))
+        layers += [price_lines]
 
+    # Overlay Live (linea + punto)
+    if use_live and live_df is not None and not live_df.empty:
+        live_line = alt.Chart(live_df).mark_line(strokeDash=[3,3]).encode(
+            x="dt:T", y="value:Q", color=alt.value("#0ea5e9")
+        )
+        live_point = alt.Chart(live_df.tail(1)).mark_point(size=80).encode(
+            x="dt:T", y="value:Q", color=alt.value("#0ea5e9"),
+            tooltip=[alt.Tooltip("dt:T", title="Live ts"), alt.Tooltip("value:Q", title="Live", format=".2f")]
+        )
+        layers += [live_line, live_point]
+
+    chart = alt.layer(*layers)
     return (chart
             .configure(padding={"top":8,"left":8,"right":8,"bottom":90})
             .configure_view(clip=False)
@@ -291,17 +373,23 @@ def _price_chart_full(dfin: pd.DataFrame, price_long: pd.DataFrame):
             .configure_legend(orient="bottom")
             .interactive())
 
-def _price_chart_lines_only(price_long: pd.DataFrame):
-    chart = (alt.Chart(price_long)
+def _price_chart_lines_only(price_long: pd.DataFrame, live_df: Optional[pd.DataFrame]):
+    layers = [(alt.Chart(price_long)
         .mark_line()
         .encode(x=alt.X("dt:T", axis=axis_x),
                 y=alt.Y("value:Q", title="Prezzo"),
                 color=alt.Color("series:N", legend=legend_bottom))
-        .configure_view(clip=False)
-        .interactive())
-    return chart
+        )]
+    if use_live and live_df is not None and not live_df.empty:
+        layers.append(
+            alt.Chart(live_df).mark_line(strokeDash=[3,3]).encode(x="dt:T", y="value:Q", color=alt.value("#0ea5e9"))
+        )
+        layers.append(
+            alt.Chart(live_df.tail(1)).mark_point(size=80).encode(x="dt:T", y="value:Q", color=alt.value("#0ea5e9"))
+        )
+    return alt.layer(*layers).configure_view(clip=False).interactive()
 
-# Limita punti per serie (no groupby.apply → niente FutureWarning)
+# Cap punti per serie (senza groupby.apply)
 def _cap_points(df: pd.DataFrame, per_series_max: int = 4000) -> pd.DataFrame:
     if "series" not in df.columns or df.empty:
         return df
@@ -312,7 +400,7 @@ def _cap_points(df: pd.DataFrame, per_series_max: int = 4000) -> pd.DataFrame:
         chunks.append(g.iloc[::step] if step > 1 else g)
     return pd.concat(chunks, ignore_index=True) if chunks else df
 
-# Diagnostica dati
+# Diagnostica
 def _diagnose_price_data(dfin: pd.DataFrame, price_long: Optional[pd.DataFrame]) -> Dict[str, any]:
     di: Dict[str, any] = {}
     try:
@@ -334,7 +422,7 @@ def _diagnose_price_data(dfin: pd.DataFrame, price_long: Optional[pd.DataFrame])
         di["diag_error"] = f"{type(e).__name__}: {e}"
     return di
 
-# ————— Render a scalini + diagnostica
+# ———— Render a scalini + diagnostica + live overlay
 try:
     price_long = _prepare_price_long(dfp, sma_list, ema_list)
     price_long = _cap_points(price_long, per_series_max=4000)
@@ -347,7 +435,7 @@ try:
 
     # FULL
     try:
-        ui.altair_chart(_price_chart_full(dfp, price_long), height=360)
+        ui.altair_chart(_price_chart_full(dfp, price_long, live_df), height=360)
         render_ok = True
     except Exception as e1:
         render_error_msgs.append(f"FULL: {type(e1).__name__}: {e1}")
@@ -355,7 +443,7 @@ try:
     # SOLO LINEE
     if not render_ok:
         try:
-            ui.altair_chart(_price_chart_lines_only(price_long), height=360)
+            ui.altair_chart(_price_chart_lines_only(price_long, live_df), height=360)
             render_ok = True
         except Exception as e2:
             render_error_msgs.append(f"LINEE: {type(e2).__name__}: {e2}")
@@ -366,9 +454,14 @@ try:
             close_only = price_long.loc[price_long["series"] == "Close", ["dt","value"]].copy()
             if close_only.empty:
                 raise RuntimeError("Serie Close vuota dopo pulizia")
-            basic = alt.Chart(close_only).mark_line().encode(
-                x="dt:T", y=alt.Y("value:Q", title="Prezzo")
-            ).interactive()
+            basic = alt.Chart(close_only).mark_line().encode(x="dt:T", y=alt.Y("value:Q", title="Prezzo")).interactive()
+            # overlay punto live se presente
+            if use_live and live_df is not None and not live_df.empty:
+                basic = alt.layer(
+                    basic,
+                    alt.Chart(live_df).mark_line(strokeDash=[3,3]).encode(x="dt:T", y="value:Q"),
+                    alt.Chart(live_df.tail(1)).mark_point(size=80).encode(x="dt:T", y="value:Q")
+                )
             ui.altair_chart(basic, height=360)
             render_ok = True
         except Exception as e3:
@@ -407,6 +500,9 @@ with st.expander("Diagnostica grafico prezzo"):
             st.caption("Sample price_long (head/tail)")
             st.dataframe(price_long.head(5))
             st.dataframe(price_long.tail(5))
+        if use_live and live_price is not None:
+            st.caption("Dettagli live")
+            st.json({"live_ts": str(live_ts), "live_price": live_price})
     except Exception:
         pass
 
@@ -538,8 +634,8 @@ try:
 except Exception as e:
     st.warning(f"Tabella non disponibile: {type(e).__name__}: {e}")
 
-with st.expander("Glossario acronimi"):
-    st.markdown(glossary_md(), unsafe_allow_html=True)
+with st.expander("Glossario e riferimenti"):
+    render_glossary_tabs()
 
 # ---- Auto refresh (con guardia)
 try:

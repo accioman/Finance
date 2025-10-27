@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 import streamlit as st
-from src.utils import ensure_state, glossary_md
+from src.utils import ensure_state, render_glossary_tabs
 from src.loader import load_yahoo_csv
 from src.pricing import enrich_with_prices
 
@@ -39,7 +39,8 @@ with st.sidebar:
                                                     value=int(st.session_state.refresh_secs), step=1, min_value=30)
     st.divider()
     st.markdown("### ℹ️ Glossario")
-    st.markdown(glossary_md(), unsafe_allow_html=True)
+    with st.expander("Glossario e riferimenti"):
+        render_glossary_tabs()
 
 def _load_df_from_session():
     source = st.session_state.get("csv_source")
