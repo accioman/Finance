@@ -1,9 +1,10 @@
-# pages/3_Analisi_tecnica.py — Analisi avanzata + autorefresh locale
+# pages/3_Analisi_tecnica.py — Analisi avanzata + autorefresh locale + downsample
 from __future__ import annotations
 import time
 import pandas as pd
 import altair as alt
 import streamlit as st
+from typing import Optional, Dict
 from src.tech import get_history, add_indicators, summarize_signals, latest_table
 from src.utils import ensure_state, require_data, reload_portfolio_from_state, glossary_md
 
@@ -19,6 +20,9 @@ require_data()
 
 st.title("📈 Analisi tecnica (avanzata)")
 
+# =======================
+#      CONTROLLI TOP
+# =======================
 symbols = st.session_state.df["Symbol"].unique().tolist()
 top = st.container()
 with top:
@@ -53,6 +57,17 @@ with st.expander("Parametri indicatori", expanded=False):
     rsi_fast_len = c14.number_input("RSI fast (trigger)", value=10, min_value=2, help="Per segnali più reattivi")
 
     add_ema8 = st.checkbox("Aggiungi EMA 8", value=True)
+
+with st.expander("Prestazioni e downsample", expanded=False):
+    d1, d2, d3 = st.columns([1,1,2])
+    enable_down = d1.checkbox("Attiva downsample", value=True, help="Riduce punti sul grafico per fluidità")
+    mode = d2.selectbox("Modalità", ["Auto", "Manuale"])
+    rule = d3.selectbox(
+        "Raggruppa per", 
+        ["5min","15min","30min","1H","4H","1D","W"],
+        index=3,  # 1H
+        help="Usato se Modalità = Manuale"
+    )
 
 # =================
 #   Dati + indici
@@ -94,11 +109,62 @@ if df_plot.empty:
     st.stop()
 
 # =========================
+#   DOWNsample per grafici
+# =========================
+def _choose_auto_rule(curr_interval: str, n_points: int) -> Optional[str]:
+    """Sceglie una regola di resample per puntare a ~1.5-3k punti max."""
+    if n_points <= 12000:
+        return None
+    # scala in funzione dell'intervallo
+    if curr_interval in ("15m","30m"):
+        if n_points > 80000: return "4H"
+        if n_points > 40000: return "1H"
+        if n_points > 20000: return "30min"
+        return "15min"
+    if curr_interval == "1h":
+        if n_points > 80000: return "1D"
+        if n_points > 40000: return "4H"
+        return "1H"
+    # 1d
+    if n_points > 5000: return "W"
+    return None
+
+def _downsample_for_plot(dfin: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Resample OHLC/Volume + 'last' per gli indicatori; restituisce 'dt' come colonna."""
+    if not isinstance(dfin.index, pd.DatetimeIndex):
+        dfin = dfin.set_index(pd.to_datetime(dfin["dt"]))
+    # Costruisci aggregazioni
+    agg: Dict[str, str] = {}
+    # OHLC
+    for c, how in (("Open","first"),("High","max"),("Low","min"),("Close","last")):
+        if c in dfin.columns: agg[c] = how
+    if "Volume" in dfin.columns:
+        agg["Volume"] = "sum"
+    # il resto -> last
+    last_cols = [c for c in dfin.columns if c not in agg and c != "dt"]
+    for c in last_cols:
+        agg[c] = "last"
+    dfo = dfin.resample(rule).agg(agg).dropna(subset=["Close"])
+    dfo["dt"] = dfo.index
+    return dfo.reset_index(drop=True)
+
+n_raw = len(df_plot)
+chosen_rule: Optional[str] = None
+if enable_down:
+    if mode == "Auto":
+        chosen_rule = _choose_auto_rule(interval, n_raw)
+    else:
+        chosen_rule = rule
+
+dfp = _downsample_for_plot(df_plot, chosen_rule) if chosen_rule else df_plot.copy()
+n_plot = len(dfp)
+
+# =========================
 #   KPI cruscotto
 # =========================
-last = df_plot.iloc[-1]
+last = dfp.iloc[-1]
 close = float(last["Close"])
-prev = float(df_plot["Close"].iloc[-2]) if len(df_plot) >= 2 else close
+prev = float(dfp["Close"].iloc[-2]) if len(dfp) >= 2 else close
 day_pl = (close - prev) / prev * 100 if prev else 0
 dist_high = float(last.get("dist_from_52w_high_%", float("nan")))
 dist_low  = float(last.get("dist_from_52w_low_%", float("nan")))
@@ -112,6 +178,7 @@ k2.metric("Day Δ%", f"{day_pl:.2f}%")
 k3.metric("Dist. 52W High", f"{dist_high:.1f}%" if pd.notna(dist_high) else "—")
 k4.metric("Dist. 52W Low", f"{dist_low:.1f}%" if pd.notna(dist_low) else "—")
 k5.metric("Squeeze", "ON" if squeeze_on else ("UP" if squeeze_up else ("DOWN" if squeeze_dn else "—")))
+st.caption(f"📉 Punti raw: {n_raw:,} → grafico: {n_plot:,}" + (f" (rule: {chosen_rule})" if chosen_rule else ""))
 
 # =========================
 #   Impostazioni Altair
@@ -130,25 +197,25 @@ def _series_frame(df: pd.DataFrame, col: str, label: str):
     return None
 
 series_frames = []
-base_close = _series_frame(df_plot, "Close", "Close")
+base_close = _series_frame(dfp, "Close", "Close")
 if base_close is not None:
     series_frames.append(base_close)
 
 for n in sma_list:
-    fr = _series_frame(df_plot, f"SMA_{n}", f"SMA {n}")
+    fr = _series_frame(dfp, f"SMA_{n}", f"SMA {n}")
     if fr is not None: series_frames.append(fr)
 
 for n in ema_list:
-    fr = _series_frame(df_plot, f"EMA_{n}", f"EMA {n}")
+    fr = _series_frame(dfp, f"EMA_{n}", f"EMA {n}")
     if fr is not None: series_frames.append(fr)
 
 if show_kc:
     for col, label in [("KC_low", "KC low"), ("KC_up", "KC up"), ("KC_mid", "KC mid")]:
-        fr = _series_frame(df_plot, col, label)
+        fr = _series_frame(dfp, col, label)
         if fr is not None: series_frames.append(fr)
 
 if not series_frames:
-    series_frames = [df_plot[["dt","Close"]].rename(columns={"Close":"value"}).assign(series="Close")]
+    series_frames = [dfp[["dt","Close"]].rename(columns={"Close":"value"}).assign(series="Close")]
 
 price_long = pd.concat(series_frames, ignore_index=True)
 
@@ -162,15 +229,15 @@ price_lines = alt.Chart(price_long).mark_line().encode(
 )
 
 bands = []
-if show_kc and {"KC_low","KC_up"}.issubset(df_plot.columns):
-    bands.append(alt.Chart(df_plot).mark_area(opacity=0.12).encode(x="dt:T", y="KC_low:Q", y2="KC_up:Q"))
-if show_bb and {"BB_low","BB_up"}.issubset(df_plot.columns):
-    bands.append(alt.Chart(df_plot).mark_area(opacity=0.15).encode(x="dt:T", y="BB_low:Q", y2="BB_up:Q"))
+if show_kc and {"KC_low","KC_up"}.issubset(dfp.columns):
+    bands.append(alt.Chart(dfp).mark_area(opacity=0.12).encode(x="dt:T", y="KC_low:Q", y2="KC_up:Q"))
+if show_bb and {"BB_low","BB_up"}.issubset(dfp.columns):
+    bands.append(alt.Chart(dfp).mark_area(opacity=0.15).encode(x="dt:T", y="BB_low:Q", y2="BB_up:Q"))
 
 # Candele (opzionale)
-if use_candles and {"Open","High","Low","Close"}.issubset(df_plot.columns):
+if use_candles and {"Open","High","Low","Close"}.issubset(dfp.columns):
     up = alt.value("#16a34a"); dn = alt.value("#ef4444")
-    rule = alt.Chart(df_plot).mark_rule().encode(
+    rule_m = alt.Chart(dfp).mark_rule().encode(
         x="dt:T", y="Low:Q", y2="High:Q", color=alt.condition("datum.Open <= datum.Close", up, dn),
         tooltip=[alt.Tooltip("dt:T", title="Data"),
                  alt.Tooltip("Open:Q", format=".2f"),
@@ -178,10 +245,10 @@ if use_candles and {"Open","High","Low","Close"}.issubset(df_plot.columns):
                  alt.Tooltip("Low:Q", format=".2f"),
                  alt.Tooltip("Close:Q", format=".2f")]
     )
-    bar = alt.Chart(df_plot).mark_bar(size=5).encode(
+    bar = alt.Chart(dfp).mark_bar(size=5).encode(
         x="dt:T", y="Open:Q", y2="Close:Q", color=alt.condition("datum.Open <= datum.Close", up, dn)
     )
-    price_base = alt.layer(*(bands + [rule, bar, price_lines]))
+    price_base = alt.layer(*(bands + [rule_m, bar, price_lines]))
 else:
     price_base = alt.layer(*(bands + [price_lines]))
 
@@ -197,12 +264,12 @@ try:
     st.altair_chart(price_chart, width="stretch")
 except Exception as e:
     st.warning(f"Render Altair non riuscito ({type(e).__name__}). Mostro un grafico semplificato.")
-    st.line_chart(df_plot.set_index("dt")["Close"], width="stretch")
+    st.line_chart(dfp.set_index("dt")["Close"], width="stretch")
 
 # ========= RSI =========
 st.subheader("RSI")
 axis_x2 = alt.Axis(title="", labelAngle=-30, labelFlush=False, labelOverlap=True)
-rsi_line = alt.Chart(df_plot).mark_line().encode(
+rsi_line = alt.Chart(dfp).mark_line().encode(
     x=alt.X("dt:T", axis=axis_x2),
     y=alt.Y("RSI:Q", title="RSI"),
     color=alt.value("#2563eb")
@@ -214,15 +281,15 @@ st.altair_chart((rsi_line + rsi_rules).properties(height=190).configure(padding=
 # ========= MACD =========
 st.subheader("MACD")
 macd_long = pd.concat([
-    df_plot[["dt","MACD"]].rename(columns={"MACD":"value"}).assign(series="MACD"),
-    df_plot[["dt","MACD_signal"]].rename(columns={"MACD_signal":"value"}).assign(series="MACD signal"),
+    dfp[["dt","MACD"]].rename(columns={"MACD":"value"}).assign(series="MACD"),
+    dfp[["dt","MACD_signal"]].rename(columns={"MACD_signal":"value"}).assign(series="MACD signal"),
 ], ignore_index=True)
 macd_lines = alt.Chart(macd_long).mark_line().encode(
     x=alt.X("dt:T", axis=axis_x2),
     y=alt.Y("value:Q", title="MACD"),
     color=alt.Color("series:N", title="Linee MACD"),
 )
-macd_hist = alt.Chart(df_plot).transform_calculate(
+macd_hist = alt.Chart(dfp).transform_calculate(
     sign="datum.MACD_hist >= 0 ? '≥ 0' : '< 0'"
 ).mark_bar().encode(
     x=alt.X("dt:T", axis=axis_x2),
@@ -232,19 +299,19 @@ macd_hist = alt.Chart(df_plot).transform_calculate(
 st.altair_chart((macd_hist + macd_lines).configure(padding={"bottom": 50}).configure_view(clip=False).interactive(), width="stretch")
 
 # ========= Volumi =========
-if show_volume and "Volume" in df_plot.columns:
+if show_volume and "Volume" in dfp.columns:
     st.subheader("Volumi")
-    vol_bar = alt.Chart(df_plot).mark_bar().encode(
+    vol_bar = alt.Chart(dfp).mark_bar().encode(
         x=alt.X("dt:T", axis=axis_x2),
         y=alt.Y("Volume:Q", title="Volume"),
         color=alt.value("#9ca3af")
     )
     vol_layers = [vol_bar]
     vser = []
-    if "Vol_MA20" in df_plot.columns:
-        vser.append(df_plot[["dt","Vol_MA20"]].rename(columns={"Vol_MA20":"value"}).assign(series="Vol MA20"))
-    if "Vol_MA50" in df_plot.columns:
-        vser.append(df_plot[["dt","Vol_MA50"]].rename(columns={"Vol_MA50":"value"}).assign(series="Vol MA50"))
+    if "Vol_MA20" in dfp.columns:
+        vser.append(dfp[["dt","Vol_MA20"]].rename(columns={"Vol_MA20":"value"}).assign(series="Vol MA20"))
+    if "Vol_MA50" in dfp.columns:
+        vser.append(dfp[["dt","Vol_MA50"]].rename(columns={"Vol_MA50":"value"}).assign(series="Vol MA50"))
     if vser:
         vol_long = pd.concat(vser, ignore_index=True)
         vol_lines = alt.Chart(vol_long).mark_line().encode(

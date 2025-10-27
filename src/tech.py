@@ -155,10 +155,10 @@ def summarize_signals(
     if d.empty or len(d) < 5:
         return msgs
 
-    last_row = d.iloc[[-1]]         # DataFrame 1xN
-    close = float(last_row["Close"].iloc[0])
+    last_df = d.iloc[[-1]].copy()
+    close = float(last_df["Close"].iloc[0])
 
-    last = d.iloc[-1]               # Series (per lettura comoda)
+    last = d.iloc[-1]
     # Squeeze
     sq_on = bool(last.get("SQUEEZE_ON", False))
     sq_up = bool(last.get("SQUEEZE_OFF_UP", False))
