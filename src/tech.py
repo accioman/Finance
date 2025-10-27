@@ -38,11 +38,14 @@ def add_indicators(
     sma=(20, 50, 200),
     ema=(21, 50),
     rsi_len=14,
+    rsi_fast_len=10,            # NEW
     macd_fast=12,
     macd_slow=26,
     macd_signal=9,
     bb_window=20,
     bb_std=2.0,
+    kc_window=20,               # NEW
+    kc_mult=1.5,                # NEW
     atr_window=14,
 ) -> pd.DataFrame:
     d = df.copy()
@@ -57,14 +60,17 @@ def add_indicators(
     for n in _parse_list(ema, [21, 50]):
         d[f"EMA_{n}"] = close.ewm(span=n, adjust=False).mean()
 
-    # --- RSI ---
-    delta = close.diff()
-    gain = np.where(delta > 0, delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
-    roll_up = pd.Series(gain, index=close.index).rolling(rsi_len).mean()
-    roll_down = pd.Series(loss, index=close.index).rolling(rsi_len).mean()
-    rs = roll_up / roll_down
-    d["RSI"] = 100.0 - (100.0 / (1.0 + rs))
+    # --- RSI standard + RSI fast (trigger) ---
+    def _rsi(series: pd.Series, length: int) -> pd.Series:
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        roll_up = gain.rolling(length).mean()
+        roll_down = loss.rolling(length).mean()
+        rs = roll_up / roll_down
+        return 100.0 - (100.0 / (1.0 + rs))
+    d["RSI"] = _rsi(close, rsi_len)
+    d["RSI_fast"] = _rsi(close, rsi_fast_len)
 
     # --- MACD ---
     ema_fast_s = close.ewm(span=macd_fast, adjust=False).mean()
@@ -75,35 +81,50 @@ def add_indicators(
     d["MACD_signal"] = macd_sig
     d["MACD_hist"] = macd - macd_sig
 
-    # --- Bollinger Bands ---
+    # --- Bollinger Bands + feature per squeeze ---
     ma = close.rolling(bb_window, min_periods=bb_window).mean()
     std = close.rolling(bb_window, min_periods=bb_window).std()
     d["BB_mid"] = ma
     d["BB_up"] = ma + bb_std * std
     d["BB_low"] = ma - bb_std * std
+    # %B e Bandwidth
+    d["BB_pctB"] = (close - d["BB_low"]) / (d["BB_up"] - d["BB_low"])
+    d["BB_bandwidth_%"] = (d["BB_up"] - d["BB_low"]) / ma * 100.0
 
-    # --- ATR (True Range) ---
+    # --- ATR (True Range) + normalizzato ---
     prev_close = close.shift(1)
     tr = pd.concat([
         (high - low).abs(),
         (high - prev_close).abs(),
         (low - prev_close).abs()
     ], axis=1).max(axis=1)
-    d["ATR"] = tr.rolling(atr_window, min_periods=atr_window).mean()
+    atr = tr.rolling(atr_window, min_periods=atr_window).mean()
+    d["ATR"] = atr
+    d["ATR_norm_%"] = (atr / close) * 100.0
+
+    # --- Keltner Channels (EMA o SMA + ATR) ---
+    # base = EMA(kc_window) più comune per KC
+    ema_kc = close.ewm(span=kc_window, adjust=False).mean()
+    d["KC_mid"] = ema_kc
+    d["KC_up"] = ema_kc + kc_mult * atr
+    d["KC_low"] = ema_kc - kc_mult * atr
+
+    # --- TTM Squeeze flag: Bollinger dentro Keltner ---
+    d["SQUEEZE_ON"] = (d["BB_up"] <= d["KC_up"]) & (d["BB_low"] >= d["KC_low"])
+    d["SQUEEZE_OFF_UP"] = (~d["SQUEEZE_ON"]) & (d["BB_up"] > d["KC_up"]) & (d["BB_low"] > d["KC_low"])
+    d["SQUEEZE_OFF_DOWN"] = (~d["SQUEEZE_ON"]) & (d["BB_up"] < d["KC_up"]) & (d["BB_low"] < d["KC_low"])
 
     # --- Volumi medi ---
     if "Volume" in d.columns:
         d["Vol_MA20"] = vol.rolling(20, min_periods=1).mean()
         d["Vol_MA50"] = vol.rolling(50, min_periods=1).mean()
 
-    # --- 52w stats ---
+    # --- 52w stats / Gap (come già avevi) ---
     win = min(len(d), 252)
     d["52w_high"] = close.rolling(win, min_periods=1).max()
     d["52w_low"]  = close.rolling(win, min_periods=1).min()
     d["dist_from_52w_high_%"] = (close / d["52w_high"] - 1.0) * 100.0
     d["dist_from_52w_low_%"]  = (close / d["52w_low"]  - 1.0) * 100.0
-
-    # --- Gap del giorno (vs prev close) ---
     if "Open" in d.columns:
         d["Gap_%"] = (d["Open"] / prev_close - 1.0) * 100.0
 
@@ -136,6 +157,28 @@ def summarize_signals(
 
     last = d.iloc[-1]
     close = float(last["Close"])
+    
+    # Squeeze (TTM-style) + trigger
+    sq_on = bool(last.get("SQUEEZE_ON", False))
+    sq_up = bool(last.get("SQUEEZE_OFF_UP", False))
+    sq_dn = bool(last.get("SQUEEZE_OFF_DOWN", False))
+
+    rsi_fast = float(last.get("RSI_fast", np.nan))
+    vol_ma20 = float(last.get("Vol_MA20", np.nan)) if "Vol_MA20" in d.columns else np.nan
+    vol = float(last.get("Volume", np.nan)) if "Volume" in d.columns else np.nan
+    vol_ok = (not np.isnan(vol)) and (not np.isnan(vol_ma20)) and (vol > 1.5 * vol_ma20)
+    
+    if sq_on:
+        msgs.append("🫙 Squeeze ON: Bollinger dentro Keltner (volatilità compressa).")
+    elif sq_up or sq_dn:
+        direction = "rialzista" if sq_up else "ribassista"
+        extra = " + volume >1.5×MA20" if vol_ok else ""
+        rsi_note = f" (RSI_fast {rsi_fast:.0f})" if not np.isnan(rsi_fast) else ""
+        msgs.append(f"🚀 Uscita dallo squeeze {direction}{extra}{rsi_note}.")
+
+    atr_n = float(last.get("ATR_norm_%", np.nan))
+    if not np.isnan(atr_n):
+        msgs.append(f"🌡️ ATR normalizzato: {atr_n:.1f}% (basso = compressione).")
 
     # Trend per medie (maggiore consenso = più forte)
     above_sma = [n for n in sma_list if not pd.isna(last.get(f"SMA_{n}", np.nan)) and close > last[f"SMA_{n}"]]

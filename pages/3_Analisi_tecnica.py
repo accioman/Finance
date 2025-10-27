@@ -38,6 +38,13 @@ with st.expander("Parametri indicatori", expanded=False):
     c9, c10 = st.columns(2)
     atr_window = c9.number_input("ATR window", value=14, min_value=2)
     show_bb = c10.checkbox("Mostra Bollinger", value=True)
+    c11, c12, c13, c14 = st.columns(4)
+    kc_window = c11.number_input("Keltner window", value=20, min_value=5, help="Di solito 20")
+    kc_mult = c12.number_input("Keltner ATR×", value=1.5, step=0.1, help="1.5 classico per TTM Squeeze")
+    show_kc = c13.checkbox("Mostra Keltner", value=False)
+    rsi_fast_len = c14.number_input("RSI fast (trigger)", value=10, min_value=2, help="Per segnali più reattivi")
+
+    add_ema8 = st.checkbox("Aggiungi EMA 8", value=True)
 
 hist = get_history(symbol, period=period, interval=interval)
 if hist.empty:
@@ -51,13 +58,16 @@ ema_list = [int(x) for x in ema_str.replace(";", ",").split(",") if x.strip().is
 df_ind = add_indicators(
     hist,
     sma=tuple(sma_list or [20,50,200]),
-    ema=tuple(ema_list or [21,50]),
+    ema=tuple(([8] if add_ema8 else []) + (ema_list or [21,50])),
     rsi_len=int(rsi_len),
+    rsi_fast_len=int(rsi_fast_len),
     macd_fast=int(macd_fast),
     macd_slow=int(macd_slow),
     macd_signal=int(macd_signal),
     bb_window=int(bb_window),
     bb_std=float(bb_std),
+    kc_window=int(kc_window),
+    kc_mult=float(kc_mult),
     atr_window=int(atr_window),
 )
 
@@ -97,6 +107,12 @@ for n in ema_list:
                 color=alt.value("#a855f7")  # viola
             )
         )
+        
+if show_kc and all(c in df_plot.columns for c in ["KC_low","KC_up"]):
+    kc_band = alt.Chart(df_plot).mark_area(opacity=0.12).encode(
+        x="dt:T", y="KC_low:Q", y2="KC_up:Q"
+    )
+    layers.insert(0, kc_band)
 
 # Bollinger opzionali
 if show_bb and all(c in df_plot.columns for c in ["BB_low", "BB_up"]):
@@ -123,6 +139,11 @@ for n in ema_list:
     col = f"EMA_{n}"
     if col in df_plot.columns:
         series_frames.append(df_plot[["dt", col]].rename(columns={col:"value"}).assign(series=f"EMA {n}"))
+
+for col,label in [("KC_low","KC low"),("KC_up","KC up"),("KC_mid","KC mid")]:
+    if show_kc and col in df_plot.columns:
+        series_frames.append(df_plot[["dt", col]].rename(columns={col:"value"}).assign(series=label))
+
 
 price_long = pd.concat(series_frames, ignore_index=True)
 

@@ -96,6 +96,12 @@ def glossary_md():
 - **EMA** (Exponential Moving Average): media mobile esponenziale (più reattiva).  
 - **RSI** (Relative Strength Index): oscillatore 0-100; >70 ipercomprato, <30 ipervenduto.  
 - **MACD** (Moving Average Convergence Divergence): differenza tra due EMA (trend/momentum).  
+- **BB** (Bollinger Bands): bande di volatilità attorno a una SMA.
+- **ATR** (Average True Range): misura della volatilità basata sui range di prezzo.
+- **Keltner Channels**: bande di volatilità basate su EMA e ATR.
+- **PL % vs Cost**: profitto/perdita % rispetto al costo medio di acquisto.  
+- **P/L % vs Prev**: profitto/perdita % rispetto alla chiusura precedente.  
+- **Day P/L**: profitto/perdita giornaliero (prezzo attuale vs chiusura precedente).
 - **P/L** (Profit/Loss): profitto o perdita.  
 - **Drawdown**: calo dal massimo storico del capitale.  
 - **Volatilità annualizzata**: dev. std. dei rendimenti giornalieri * √252.  
