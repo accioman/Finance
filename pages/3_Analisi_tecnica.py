@@ -1,10 +1,10 @@
-# pages/3_Analisi_tecnica.py — Analisi avanzata + autorefresh locale + downsample
+# pages/3_Analisi_tecnica.py — Analisi avanzata + autorefresh locale + downsample robusto
 from __future__ import annotations
 import time
 import pandas as pd
 import altair as alt
 import streamlit as st
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from src.tech import get_history, add_indicators, summarize_signals, latest_table
 from src.utils import ensure_state, require_data, reload_portfolio_from_state, glossary_md
 
@@ -58,14 +58,26 @@ with st.expander("Parametri indicatori", expanded=False):
 
     add_ema8 = st.checkbox("Aggiungi EMA 8", value=True)
 
-with st.expander("Prestazioni e downsample", expanded=False):
+# === Opzioni downsample compatibili col timeframe ===
+def _rules_for_interval(iv: str) -> List[str]:
+    iv = iv.lower()
+    if iv == "1d":
+        # niente minuti/ore su dati daily
+        return ["1D","W","2W","M","Q"]
+    if iv == "1h":
+        return ["1H","4H","1D","W"]
+    if iv in ("30m","15m"):
+        return ["15min","30min","1H","4H","1D"]
+    return ["1D","W","M"]
+
+with st.expander("Prestazioni e downsample", expanded=True):
     d1, d2, d3 = st.columns([1,1,2])
     enable_down = d1.checkbox("Attiva downsample", value=True, help="Riduce punti sul grafico per fluidità")
-    mode = d2.selectbox("Modalità", ["Auto", "Manuale"])
+    mode = d2.selectbox("Modalità", ["Auto", "Manuale"], index=0)
     rule = d3.selectbox(
-        "Raggruppa per", 
-        ["5min","15min","30min","1H","4H","1D","W"],
-        index=3,  # 1H
+        "Raggruppa per",
+        _rules_for_interval(interval),
+        index=0,
         help="Usato se Modalità = Manuale"
     )
 
@@ -96,7 +108,7 @@ df_ind = add_indicators(
     atr_window=int(atr_window),
 )
 
-# Normalizza indice tempo in colonna 'dt' (senza timezone, sempre datetime)
+# Normalizza indice tempo in colonna 'dt'
 df_plot = (
     df_ind.reset_index().rename(columns={"Date": "dt"})
     if "Date" in df_ind.columns
@@ -112,16 +124,16 @@ if df_plot.empty:
 #   DOWNsample per grafici
 # =========================
 def _choose_auto_rule(curr_interval: str, n_points: int) -> Optional[str]:
-    """Sceglie una regola di resample per puntare a ~1.5-3k punti max."""
+    """Sceglie una regola di resample mirando a ~3k punti max."""
     if n_points <= 12000:
         return None
-    # scala in funzione dell'intervallo
-    if curr_interval in ("15m","30m"):
+    ci = curr_interval.lower()
+    if ci in ("15m","30m"):
         if n_points > 80000: return "4H"
         if n_points > 40000: return "1H"
         if n_points > 20000: return "30min"
         return "15min"
-    if curr_interval == "1h":
+    if ci == "1h":
         if n_points > 80000: return "1D"
         if n_points > 40000: return "4H"
         return "1H"
@@ -130,33 +142,41 @@ def _choose_auto_rule(curr_interval: str, n_points: int) -> Optional[str]:
     return None
 
 def _downsample_for_plot(dfin: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """Resample OHLC/Volume + 'last' per gli indicatori; restituisce 'dt' come colonna."""
+    """Resample OHLC/Volume + 'last' per indicatori; restituisce 'dt' come colonna."""
     if not isinstance(dfin.index, pd.DatetimeIndex):
         dfin = dfin.set_index(pd.to_datetime(dfin["dt"]))
-    # Costruisci aggregazioni
     agg: Dict[str, str] = {}
-    # OHLC
     for c, how in (("Open","first"),("High","max"),("Low","min"),("Close","last")):
         if c in dfin.columns: agg[c] = how
     if "Volume" in dfin.columns:
         agg["Volume"] = "sum"
-    # il resto -> last
-    last_cols = [c for c in dfin.columns if c not in agg and c != "dt"]
-    for c in last_cols:
+    for c in [c for c in dfin.columns if c not in agg and c != "dt"]:
         agg[c] = "last"
-    dfo = dfin.resample(rule).agg(agg).dropna(subset=["Close"])
+    dfo = dfin.resample(rule).agg(agg)
+    dfo = dfo.dropna(subset=["Close"])
     dfo["dt"] = dfo.index
     return dfo.reset_index(drop=True)
 
 n_raw = len(df_plot)
 chosen_rule: Optional[str] = None
 if enable_down:
-    if mode == "Auto":
-        chosen_rule = _choose_auto_rule(interval, n_raw)
-    else:
-        chosen_rule = rule
+    chosen_rule = _choose_auto_rule(interval, n_raw) if mode == "Auto" else rule
 
-dfp = _downsample_for_plot(df_plot, chosen_rule) if chosen_rule else df_plot.copy()
+# esegui downsample (con fallback se vuoto)
+if chosen_rule:
+    try:
+        dfp = _downsample_for_plot(df_plot, chosen_rule)
+        if dfp.empty:
+            st.warning(f"Nessun dato con la regola di raggruppamento '{chosen_rule}'. Uso i dati originali.")
+            dfp = df_plot.copy()
+            chosen_rule = None
+    except Exception as e:
+        st.warning(f"Downsample fallito ({type(e).__name__}: {e}). Uso i dati originali.")
+        dfp = df_plot.copy()
+        chosen_rule = None
+else:
+    dfp = df_plot.copy()
+
 n_plot = len(dfp)
 
 # =========================
