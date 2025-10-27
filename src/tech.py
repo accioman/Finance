@@ -2,28 +2,23 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
+import streamlit as st
 
-def get_history(symbol: str, period="1y", interval="1d") -> pd.DataFrame:
+# -----------------------
+# Helper sicuri
+# -----------------------
+def _safe_float(x) -> Optional[float]:
     try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
-        if df is None or df.empty:
-            return pd.DataFrame()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.rename(columns=str.title)
-        # rimuovi righe completamente NaN
-        df = df.dropna(how="all")
-        return df
+        return float(x)
     except Exception:
-        return pd.DataFrame()
+        return None
 
 def _parse_list(inp, default: List[int]) -> List[int]:
     if inp is None:
         return default
     if isinstance(inp, (list, tuple)):
         return [int(x) for x in inp if str(x).strip().isdigit()]
-    # stringa "20,50,200"
     parts = [p.strip() for p in str(inp).replace(";", ",").split(",")]
     out = []
     for p in parts:
@@ -33,34 +28,57 @@ def _parse_list(inp, default: List[int]) -> List[int]:
             pass
     return out or default
 
+# -----------------------
+# Dati storici (CACHE)
+# -----------------------
+@st.cache_data(show_spinner=False, ttl=300, max_entries=256)
+def get_history(symbol: str, period="1y", interval="1d") -> pd.DataFrame:
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.rename(columns=str.title)
+        df = df.dropna(how="all")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# -----------------------
+# Indicatori
+# -----------------------
 def add_indicators(
     df: pd.DataFrame,
     sma=(20, 50, 200),
     ema=(21, 50),
     rsi_len=14,
-    rsi_fast_len=10,            # NEW
+    rsi_fast_len=10,
     macd_fast=12,
     macd_slow=26,
     macd_signal=9,
     bb_window=20,
     bb_std=2.0,
-    kc_window=20,               # NEW
-    kc_mult=1.5,                # NEW
+    kc_window=20,
+    kc_mult=1.5,
     atr_window=14,
 ) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
     d = df.copy()
-    close = d["Close"].astype(float)
-    high  = d["High"].astype(float)
-    low   = d["Low"].astype(float)
-    vol   = d["Volume"].astype(float) if "Volume" in d.columns else pd.Series(index=d.index, dtype=float)
+    for col in ["Open","High","Low","Close"]:
+        d[col] = d[col].astype(float)
 
-    # --- SMA / EMA multipli ---
+    close = d["Close"]; high = d["High"]; low = d["Low"]
+    vol = d["Volume"].astype(float) if "Volume" in d.columns else pd.Series(index=d.index, dtype=float)
+
+    # SMA/EMA
     for n in _parse_list(sma, [20, 50, 200]):
         d[f"SMA_{n}"] = close.rolling(window=n, min_periods=n).mean()
     for n in _parse_list(ema, [21, 50]):
         d[f"EMA_{n}"] = close.ewm(span=n, adjust=False).mean()
 
-    # --- RSI standard + RSI fast (trigger) ---
+    # RSI (standard + fast)
     def _rsi(series: pd.Series, length: int) -> pd.Series:
         delta = series.diff()
         gain = delta.clip(lower=0)
@@ -72,7 +90,7 @@ def add_indicators(
     d["RSI"] = _rsi(close, rsi_len)
     d["RSI_fast"] = _rsi(close, rsi_fast_len)
 
-    # --- MACD ---
+    # MACD
     ema_fast_s = close.ewm(span=macd_fast, adjust=False).mean()
     ema_slow_s = close.ewm(span=macd_slow, adjust=False).mean()
     macd = ema_fast_s - ema_slow_s
@@ -81,17 +99,16 @@ def add_indicators(
     d["MACD_signal"] = macd_sig
     d["MACD_hist"] = macd - macd_sig
 
-    # --- Bollinger Bands + feature per squeeze ---
+    # Bollinger
     ma = close.rolling(bb_window, min_periods=bb_window).mean()
     std = close.rolling(bb_window, min_periods=bb_window).std()
     d["BB_mid"] = ma
     d["BB_up"] = ma + bb_std * std
     d["BB_low"] = ma - bb_std * std
-    # %B e Bandwidth
     d["BB_pctB"] = (close - d["BB_low"]) / (d["BB_up"] - d["BB_low"])
     d["BB_bandwidth_%"] = (d["BB_up"] - d["BB_low"]) / ma * 100.0
 
-    # --- ATR (True Range) + normalizzato ---
+    # ATR + normalizzato
     prev_close = close.shift(1)
     tr = pd.concat([
         (high - low).abs(),
@@ -102,24 +119,23 @@ def add_indicators(
     d["ATR"] = atr
     d["ATR_norm_%"] = (atr / close) * 100.0
 
-    # --- Keltner Channels (EMA o SMA + ATR) ---
-    # base = EMA(kc_window) più comune per KC
+    # Keltner
     ema_kc = close.ewm(span=kc_window, adjust=False).mean()
     d["KC_mid"] = ema_kc
     d["KC_up"] = ema_kc + kc_mult * atr
     d["KC_low"] = ema_kc - kc_mult * atr
 
-    # --- TTM Squeeze flag: Bollinger dentro Keltner ---
+    # Squeeze flags
     d["SQUEEZE_ON"] = (d["BB_up"] <= d["KC_up"]) & (d["BB_low"] >= d["KC_low"])
     d["SQUEEZE_OFF_UP"] = (~d["SQUEEZE_ON"]) & (d["BB_up"] > d["KC_up"]) & (d["BB_low"] > d["KC_low"])
     d["SQUEEZE_OFF_DOWN"] = (~d["SQUEEZE_ON"]) & (d["BB_up"] < d["KC_up"]) & (d["BB_low"] < d["KC_low"])
 
-    # --- Volumi medi ---
+    # Volumi
     if "Volume" in d.columns:
         d["Vol_MA20"] = vol.rolling(20, min_periods=1).mean()
         d["Vol_MA50"] = vol.rolling(50, min_periods=1).mean()
 
-    # --- 52w stats / Gap (come già avevi) ---
+    # 52w + Gap
     win = min(len(d), 252)
     d["52w_high"] = close.rolling(win, min_periods=1).max()
     d["52w_low"]  = close.rolling(win, min_periods=1).min()
@@ -130,8 +146,10 @@ def add_indicators(
 
     return d
 
+# -----------------------
+# Cross + segnali sintetici
+# -----------------------
 def _last_cross(series_fast: pd.Series, series_slow: pd.Series) -> Tuple[str, pd.Timestamp]:
-    """Ritorna ('bullish'|'bearish'|'none', ts) per l'ultimo incrocio rilevato."""
     s1 = series_fast - series_slow
     sign = np.sign(s1)
     cs = sign.diff()
@@ -139,35 +157,29 @@ def _last_cross(series_fast: pd.Series, series_slow: pd.Series) -> Tuple[str, pd
     if len(idx) == 0:
         return "none", pd.NaT
     last_idx = idx[-1]
-    # determinare tipo
-    if s1.loc[last_idx] > 0:
-        return "bullish", last_idx
-    else:
-        return "bearish", last_idx
+    return ("bullish" if s1.loc[last_idx] > 0 else "bearish"), last_idx
 
 def summarize_signals(
     d: pd.DataFrame,
     sma_list: List[int],
     ema_list: List[int],
 ) -> List[str]:
-    """Restituisce messaggi comprensibili e compatti."""
     msgs: List[str] = []
     if d.empty or len(d) < 5:
         return msgs
 
     last = d.iloc[-1]
     close = float(last["Close"])
-    
-    # Squeeze (TTM-style) + trigger
+
+    # Squeeze
     sq_on = bool(last.get("SQUEEZE_ON", False))
     sq_up = bool(last.get("SQUEEZE_OFF_UP", False))
     sq_dn = bool(last.get("SQUEEZE_OFF_DOWN", False))
-
     rsi_fast = float(last.get("RSI_fast", np.nan))
     vol_ma20 = float(last.get("Vol_MA20", np.nan)) if "Vol_MA20" in d.columns else np.nan
     vol = float(last.get("Volume", np.nan)) if "Volume" in d.columns else np.nan
     vol_ok = (not np.isnan(vol)) and (not np.isnan(vol_ma20)) and (vol > 1.5 * vol_ma20)
-    
+
     if sq_on:
         msgs.append("🫙 Squeeze ON: Bollinger dentro Keltner (volatilità compressa).")
     elif sq_up or sq_dn:
@@ -180,7 +192,7 @@ def summarize_signals(
     if not np.isnan(atr_n):
         msgs.append(f"🌡️ ATR normalizzato: {atr_n:.1f}% (basso = compressione).")
 
-    # Trend per medie (maggiore consenso = più forte)
+    # Trend per medie
     above_sma = [n for n in sma_list if not pd.isna(last.get(f"SMA_{n}", np.nan)) and close > last[f"SMA_{n}"]]
     below_sma = [n for n in sma_list if not pd.isna(last.get(f"SMA_{n}", np.nan)) and close < last[f"SMA_{n}"]]
     if above_sma and not below_sma:
@@ -208,16 +220,13 @@ def summarize_signals(
     macd_sig = float(last.get("MACD_signal", np.nan))
     macd_hist = float(last.get("MACD_hist", np.nan))
     if not any(np.isnan([macd, macd_sig, macd_hist])):
-        if macd > macd_sig:
-            msgs.append("✅ MACD sopra il segnale (momentum positivo).")
-        else:
-            msgs.append("❌ MACD sotto il segnale (momentum debole).")
+        msgs.append("✅ MACD sopra il segnale (momentum positivo)." if macd > macd_sig else "❌ MACD sotto il segnale (momentum debole).")
         if macd_hist > 0:
             msgs.append("➕ Istogramma MACD positivo (forza crescente).")
         elif macd_hist < 0:
             msgs.append("➖ Istogramma MACD negativo (forza calante).")
 
-    # Bollinger squeeze / breakout
+    # Bollinger
     bb_up, bb_low = last.get("BB_up", np.nan), last.get("BB_low", np.nan)
     if not np.isnan(bb_up) and not np.isnan(bb_low):
         width = (bb_up - bb_low) / close * 100.0 if close else np.nan
@@ -229,18 +238,18 @@ def summarize_signals(
             elif close < bb_low:
                 msgs.append("🧊 Close sotto BB inferiore: breakout ribassista.")
 
-    # Distanza 52w high/low
+    # 52w
     dfh = float(last.get("dist_from_52w_high_%", np.nan))
     dfl = float(last.get("dist_from_52w_low_%", np.nan))
     if not np.isnan(dfh) and not np.isnan(dfl):
         msgs.append(f"📏 Distanza dai 52w: High {dfh:.1f}% | Low {dfl:.1f}%.")
 
-    # ATR / volatilità
+    # ATR semplice
     atr = float(last.get("ATR", np.nan))
     if not np.isnan(atr) and close:
         msgs.append(f"🌪️ ATR: {atr:.2f} ({atr/close*100:.1f}% del prezzo).")
 
-    # Ultimi cross (SMA e EMA, dal più corto al più lungo)
+    # Ultimi cross
     sma_list = sorted([n for n in sma_list if f"SMA_{n}" in d.columns])
     ema_list = sorted([n for n in ema_list if f"EMA_{n}" in d.columns])
     if len(sma_list) >= 2:
@@ -266,8 +275,10 @@ def summarize_signals(
 
     return msgs
 
+# -----------------------
+# Tabella ultimo valore
+# -----------------------
 def latest_table(d: pd.DataFrame, sma_list: List[int], ema_list: List[int]) -> pd.DataFrame:
-    """Tabella compatta di valori correnti (close, MA/EMA, distanze %)."""
     if d.empty:
         return pd.DataFrame()
     last = d.iloc[[-1]].copy()
@@ -285,23 +296,19 @@ def latest_table(d: pd.DataFrame, sma_list: List[int], ema_list: List[int]) -> p
             v = float(last[col].iloc[0])
             rows[f"EMA {n}"] = {"Value": v, "Δ% vs Close": (close / v - 1) * 100.0}
 
-    # 52w
     for label in ["52w_high", "52w_low"]:
         if label in d.columns and not pd.isna(last[label].iloc[0]) and close:
             v = float(last[label].iloc[0])
             rows[label] = {"Value": v, "Δ% vs Close": (close / v - 1) * 100.0}
 
-    # ATR
     if "ATR" in d.columns and not pd.isna(last["ATR"].iloc[0]) and close:
         v = float(last["ATR"].iloc[0])
         rows["ATR"] = {"Value": v, "Δ% vs Close": v / close * 100.0}
 
-    # RSI
     if "RSI" in d.columns and not pd.isna(last["RSI"].iloc[0]):
         v = float(last["RSI"].iloc[0])
         rows["RSI"] = {"Value": v, "Δ% vs Close": np.nan}
 
-    # Volumi
     for label in ["Vol_MA20", "Vol_MA50"]:
         if label in d.columns and not pd.isna(last[label].iloc[0]):
             rows[label] = {"Value": float(last[label].iloc[0]), "Δ% vs Close": np.nan}
