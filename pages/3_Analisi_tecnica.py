@@ -1,4 +1,4 @@
-# pages/3_Analisi_tecnica.py — Analisi avanzata + autorefresh locale + downsample robusto
+# pages/3_Analisi_tecnica.py — Analisi avanzata + autorefresh + downsample robusto (compat width)
 from __future__ import annotations
 import time
 import pandas as pd
@@ -14,6 +14,32 @@ alt.renderers.set_embed_options(actions=False)
 
 st.set_page_config(page_title="Analisi tecnica", page_icon="📈", layout="wide")
 
+# ---------- Helper compatibilità Streamlit vecchio/nuovo ----------
+def _altair(chart, height: Optional[int] = None):
+    """Render Altair con preferenza width='stretch' e fallback a use_container_width=True."""
+    if height is not None:
+        chart = chart.properties(height=height)
+    try:
+        return st.altair_chart(chart, width="stretch")
+    except TypeError:
+        return st.altair_chart(chart, use_container_width=True)
+
+def _line_chart(data):
+    try:
+        return st.line_chart(data, width="stretch")
+    except TypeError:
+        return st.line_chart(data, use_container_width=True)
+
+def _dataframe(data, height: Optional[int] = None):
+    kwargs = {}
+    if height is not None:
+        kwargs["height"] = height
+    try:
+        return st.dataframe(data, width="stretch", **kwargs)
+    except TypeError:
+        return st.dataframe(data, use_container_width=True, **kwargs)
+
+# ---------- Stato / dati ----------
 ensure_state()
 reload_portfolio_from_state()
 require_data()
@@ -62,7 +88,6 @@ with st.expander("Parametri indicatori", expanded=False):
 def _rules_for_interval(iv: str) -> List[str]:
     iv = iv.lower()
     if iv == "1d":
-        # niente minuti/ore su dati daily
         return ["1D","W","2W","M","Q"]
     if iv == "1h":
         return ["1H","4H","1D","W"]
@@ -137,8 +162,8 @@ def _choose_auto_rule(curr_interval: str, n_points: int) -> Optional[str]:
         if n_points > 80000: return "1D"
         if n_points > 40000: return "4H"
         return "1H"
-    # 1d
-    if n_points > 5000: return "W"
+    if n_points > 5000:  # 1d
+        return "W"
     return None
 
 def _downsample_for_plot(dfin: pd.DataFrame, rule: str) -> pd.DataFrame:
@@ -162,7 +187,6 @@ chosen_rule: Optional[str] = None
 if enable_down:
     chosen_rule = _choose_auto_rule(interval, n_raw) if mode == "Auto" else rule
 
-# esegui downsample (con fallback se vuoto)
 if chosen_rule:
     try:
         dfp = _downsample_for_plot(df_plot, chosen_rule)
@@ -281,10 +305,10 @@ try:
         .configure_legend(orient="bottom")
         .interactive()
     )
-    st.altair_chart(price_chart, width="stretch")
+    _altair(price_chart)
 except Exception as e:
     st.warning(f"Render Altair non riuscito ({type(e).__name__}). Mostro un grafico semplificato.")
-    st.line_chart(dfp.set_index("dt")["Close"], width="stretch")
+    _line_chart(dfp.set_index("dt")["Close"])
 
 # ========= RSI =========
 st.subheader("RSI")
@@ -296,7 +320,7 @@ rsi_line = alt.Chart(dfp).mark_line().encode(
 )
 rsi_thresh = pd.DataFrame({"y": [30, 70], "soglia": ["RSI 30", "RSI 70"]})
 rsi_rules = alt.Chart(rsi_thresh).mark_rule().encode(y="y:Q", color=alt.Color("soglia:N", title="Soglie RSI"))
-st.altair_chart((rsi_line + rsi_rules).properties(height=190).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), width="stretch")
+_altair((rsi_line + rsi_rules).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), height=190)
 
 # ========= MACD =========
 st.subheader("MACD")
@@ -316,7 +340,7 @@ macd_hist = alt.Chart(dfp).transform_calculate(
     y="MACD_hist:Q",
     color=alt.Color("sign:N", title="Istogramma MACD", scale=alt.Scale(domain=["≥ 0","< 0"]))
 ).properties(height=170)
-st.altair_chart((macd_hist + macd_lines).configure(padding={"bottom": 50}).configure_view(clip=False).interactive(), width="stretch")
+_altair((macd_hist + macd_lines).configure(padding={"bottom": 50}).configure_view(clip=False).interactive())
 
 # ========= Volumi =========
 if show_volume and "Volume" in dfp.columns:
@@ -340,7 +364,7 @@ if show_volume and "Volume" in dfp.columns:
             color=alt.Color("series:N", title="Medie Volume")
         )
         vol_layers.append(vol_lines)
-    st.altair_chart(alt.layer(*vol_layers).properties(height=190).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), width="stretch")
+    _altair(alt.layer(*vol_layers).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), height=190)
 
 # ========= Segnali + Tabella =========
 st.subheader("Segnali sintetici")
@@ -361,7 +385,7 @@ if not tab.empty:
         sty = df.style.map(colorize, subset=pd.IndexSlice[:, ["Δ% vs Close"]])
         sty = sty.format({"Value": "{:.4f}", "Δ% vs Close": "{:.2f}%"})
         return sty
-    st.dataframe(_styler(tab), width="stretch", height=280)
+    _dataframe(_styler(tab), height=280)
 else:
     st.caption("Nessun dato disponibile per la tabella.")
 

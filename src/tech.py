@@ -159,7 +159,6 @@ def summarize_signals(
     close = float(last_df["Close"].iloc[0])
 
     last = d.iloc[-1]
-    # Squeeze
     sq_on = bool(last.get("SQUEEZE_ON", False))
     sq_up = bool(last.get("SQUEEZE_OFF_UP", False))
     sq_dn = bool(last.get("SQUEEZE_OFF_DOWN", False))
@@ -181,7 +180,6 @@ def summarize_signals(
     if not np.isnan(atr_n):
         msgs.append(f"🌡️ ATR normalizzato: {atr_n:.1f}% (basso = compressione).")
 
-    # Trend per medie
     above_sma = [n for n in sma_list if not pd.isna(last.get(f"SMA_{n}", np.nan)) and close > last[f"SMA_{n}"]]
     below_sma = [n for n in sma_list if not pd.isna(last.get(f"SMA_{n}", np.nan)) and close < last[f"SMA_{n}"]]
     if above_sma and not below_sma:
@@ -194,7 +192,6 @@ def summarize_signals(
         if below_sma:
             msgs.append(f"🙃 Prezzo sotto SMA {below_sma}, ma non tutte.")
 
-    # RSI
     rsi = float(last.get("RSI", np.nan))
     if not np.isnan(rsi):
         if rsi >= 70:
@@ -204,7 +201,6 @@ def summarize_signals(
         else:
             msgs.append(f"ℹ️ RSI neutro: {rsi:.1f}")
 
-    # MACD
     macd = float(last.get("MACD", np.nan))
     macd_sig = float(last.get("MACD_signal", np.nan))
     macd_hist = float(last.get("MACD_hist", np.nan))
@@ -215,7 +211,6 @@ def summarize_signals(
         elif macd_hist < 0:
             msgs.append("➖ Istogramma MACD negativo (forza calante).")
 
-    # Bollinger
     bb_up, bb_low = last.get("BB_up", np.nan), last.get("BB_low", np.nan)
     if not np.isnan(bb_up) and not np.isnan(bb_low):
         width = (bb_up - bb_low) / close * 100.0 if close else np.nan
@@ -227,18 +222,15 @@ def summarize_signals(
             elif close < bb_low:
                 msgs.append("🧊 Close sotto BB inferiore: breakout ribassista.")
 
-    # 52w
     dfh = float(last.get("dist_from_52w_high_%", np.nan))
     dfl = float(last.get("dist_from_52w_low_%", np.nan))
     if not np.isnan(dfh) and not np.isnan(dfl):
         msgs.append(f"📏 Distanza dai 52w: High {dfh:.1f}% | Low {dfl:.1f}%.")
 
-    # ATR semplice
     atr = float(last.get("ATR", np.nan))
     if not np.isnan(atr) and close:
         msgs.append(f"🌪️ ATR: {atr:.2f} ({atr/close*100:.1f}% del prezzo).")
 
-    # Ultimi cross
     sma_list = sorted([n for n in sma_list if f"SMA_{n}" in d.columns])
     ema_list = sorted([n for n in ema_list if f"EMA_{n}" in d.columns])
     if len(sma_list) >= 2:
@@ -254,7 +246,6 @@ def summarize_signals(
             emoji = "🟢" if typ == "bullish" else "🔴"
             msgs.append(f"{emoji} Ultimo cross EMA {fast}/{slow}: {typ} in data {when.date()}.")
 
-    # Gap
     gap = float(last.get("Gap_%", np.nan))
     if not np.isnan(gap):
         if gap >= 2:
