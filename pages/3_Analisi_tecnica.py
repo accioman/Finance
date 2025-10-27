@@ -111,6 +111,34 @@ price_chart = alt.layer(*layers).properties(height=320).interactive()
 st.altair_chart(price_chart, use_container_width=True)
 
 st.subheader("Prezzo con SMA/EMA" + (" + Bollinger" if show_bb else ""))
+# dataframe "long" per Close, SMA, EMA
+series_frames = [
+    df_plot[["dt","Close"]].rename(columns={"Close":"value"}).assign(series="Close")
+]
+for n in sma_list:
+    col = f"SMA_{n}"
+    if col in df_plot.columns:
+        series_frames.append(df_plot[["dt", col]].rename(columns={col:"value"}).assign(series=f"SMA {n}"))
+for n in ema_list:
+    col = f"EMA_{n}"
+    if col in df_plot.columns:
+        series_frames.append(df_plot[["dt", col]].rename(columns={col:"value"}).assign(series=f"EMA {n}"))
+
+price_long = pd.concat(series_frames, ignore_index=True)
+
+# linea price/MA con legenda
+price_lines = alt.Chart(price_long).mark_line().encode(
+    x=alt.X("dt:T", title=""),
+    y=alt.Y("value:Q", title="Prezzo"),
+    color=alt.Color("series:N", title="Serie")
+)
+
+# Bollinger band (senza legenda; è una fascia visiva)
+bb_layer = alt.Chart(df_plot).mark_area(opacity=0.15).encode(
+    x="dt:T", y="BB_low:Q", y2="BB_up:Q"
+) if show_bb and all(c in df_plot.columns for c in ["BB_low","BB_up"]) else None
+
+price_chart = (bb_layer + price_lines).properties(height=320).interactive() if bb_layer else price_lines.properties(height=320).interactive()
 st.altair_chart(price_chart, use_container_width=True)
 
 # =========
