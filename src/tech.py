@@ -1,15 +1,10 @@
+# src/tech.py — storico robusto + indicatori
 from __future__ import annotations
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from typing import List, Tuple, Dict, Optional
 import streamlit as st
-
-def _safe_float(x) -> Optional[float]:
-    try:
-        return float(x)
-    except Exception:
-        return None
 
 def _parse_list(inp, default: List[int]) -> List[int]:
     if inp is None:
@@ -27,16 +22,39 @@ def _parse_list(inp, default: List[int]) -> List[int]:
 
 @st.cache_data(show_spinner=False, ttl=300, max_entries=256)
 def get_history(symbol: str, period="1y", interval="1d") -> pd.DataFrame:
-    try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+    """
+    Scarica lo storico con fallback:
+    - Prova (period, interval)
+    - Se vuoto e period '5d' → prova '1mo'
+    - Se ancora vuoto → prova '1y' '1d'
+    Gestisce delisted (yfinance ritorna empty).
+    """
+    tried = []
+    def _try(p, iv):
+        tried.append((p, iv))
+        try:
+            df = yf.download(symbol, period=p, interval=iv, progress=False, auto_adjust=False)
+        except Exception:
+            return pd.DataFrame()
         if df is None or df.empty:
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df.rename(columns=str.title).dropna(how="all")
         return df
-    except Exception:
-        return pd.DataFrame()
+
+    df = _try(period, interval)
+    if df.empty and period == "5d":
+        df = _try("1mo", interval)
+    if df.empty and interval != "1d":
+        df = _try("1y", "1d")
+
+    # pulizie minime
+    if not df.empty and "Close" in df.columns:
+        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+        df = df.dropna(subset=["Close"])
+
+    return df
 
 def add_indicators(
     df: pd.DataFrame,
@@ -57,9 +75,12 @@ def add_indicators(
         return pd.DataFrame()
     d = df.copy()
     for col in ["Open","High","Low","Close"]:
-        d[col] = d[col].astype(float)
+        if col in d.columns:
+            d[col] = pd.to_numeric(d[col], errors="coerce")
+    if "Volume" in d.columns:
+        d["Volume"] = pd.to_numeric(d["Volume"], errors="coerce")
 
-    close = d["Close"]; high = d["High"]; low = d["Low"]
+    close = d["Close"]; high = d.get("High", close); low = d.get("Low", close)
     vol = d["Volume"].astype(float) if "Volume" in d.columns else pd.Series(index=d.index, dtype=float)
 
     # SMA / EMA
@@ -68,13 +89,13 @@ def add_indicators(
     for n in _parse_list(ema, [21, 50]):
         d[f"EMA_{n}"] = close.ewm(span=n, adjust=False).mean()
 
-    # RSI standard + fast
+    # RSI
     def _rsi(series: pd.Series, length: int) -> pd.Series:
         delta = series.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        roll_up = gain.rolling(length).mean()
-        roll_down = loss.rolling(length).mean()
+        roll_up = gain.rolling(length, min_periods=length).mean()
+        roll_down = loss.rolling(length, min_periods=length).mean()
         rs = roll_up / roll_down
         return 100.0 - (100.0 / (1.0 + rs))
     d["RSI"] = _rsi(close, rsi_len)
@@ -183,21 +204,19 @@ def summarize_signals(
     above_sma = [n for n in sma_list if not pd.isna(last.get(f"SMA_{n}", np.nan)) and close > last[f"SMA_{n}"]]
     below_sma = [n for n in sma_list if not pd.isna(last.get(f"SMA_{n}", np.nan)) and close < last[f"SMA_{n}"]]
     if above_sma and not below_sma:
-        msgs.append(f"📈 Trend rialzista: prezzo sopra tutte le SMA {above_sma}.")
+        msgs.append(f"📈 Prezzo sopra tutte le SMA {above_sma}.")
     elif below_sma and not above_sma:
-        msgs.append(f"📉 Trend ribassista: prezzo sotto tutte le SMA {below_sma}.")
+        msgs.append(f"📉 Prezzo sotto tutte le SMA {below_sma}.")
     else:
-        if above_sma:
-            msgs.append(f"🙂 Prezzo sopra SMA {above_sma}, ma non tutte.")
-        if below_sma:
-            msgs.append(f"🙃 Prezzo sotto SMA {below_sma}, ma non tutte.")
+        if above_sma: msgs.append(f"🙂 Prezzo sopra SMA {above_sma}, ma non tutte.")
+        if below_sma: msgs.append(f"🙃 Prezzo sotto SMA {below_sma}, ma non tutte.")
 
     rsi = float(last.get("RSI", np.nan))
     if not np.isnan(rsi):
         if rsi >= 70:
-            msgs.append("⚠️ RSI in ipercomprato (≥70): rischio ritracciamento.")
+            msgs.append("⚠️ RSI in ipercomprato (≥70).")
         elif rsi <= 30:
-            msgs.append("💡 RSI in ipervenduto (≤30): possibile rimbalzo.")
+            msgs.append("💡 RSI in ipervenduto (≤30).")
         else:
             msgs.append(f"ℹ️ RSI neutro: {rsi:.1f}")
 
@@ -205,46 +224,45 @@ def summarize_signals(
     macd_sig = float(last.get("MACD_signal", np.nan))
     macd_hist = float(last.get("MACD_hist", np.nan))
     if not any(np.isnan([macd, macd_sig, macd_hist])):
-        msgs.append("✅ MACD sopra il segnale (momentum positivo)." if macd > macd_sig else "❌ MACD sotto il segnale (momentum debole).")
+        msgs.append("✅ MACD sopra il segnale." if macd > macd_sig else "❌ MACD sotto il segnale.")
         if macd_hist > 0:
-            msgs.append("➕ Istogramma MACD positivo (forza crescente).")
+            msgs.append("➕ Istogramma MACD positivo.")
         elif macd_hist < 0:
-            msgs.append("➖ Istogramma MACD negativo (forza calante).")
+            msgs.append("➖ Istogramma MACD negativo.")
 
     bb_up, bb_low = last.get("BB_up", np.nan), last.get("BB_low", np.nan)
     if not np.isnan(bb_up) and not np.isnan(bb_low):
         width = (bb_up - bb_low) / close * 100.0 if close else np.nan
         if not np.isnan(width):
             if width < 5:
-                msgs.append("🫙 Bollinger squeeze (<5%): volatilità compressa, possibili breakout.")
+                msgs.append("🫙 Bollinger squeeze (<5%).")
             if close > bb_up:
-                msgs.append("🚀 Close oltre BB superiore: breakout rialzista.")
+                msgs.append("🚀 Close oltre BB superiore.")
             elif close < bb_low:
-                msgs.append("🧊 Close sotto BB inferiore: breakout ribassista.")
+                msgs.append("🧊 Close sotto BB inferiore.")
 
     dfh = float(last.get("dist_from_52w_high_%", np.nan))
     dfl = float(last.get("dist_from_52w_low_%", np.nan))
     if not np.isnan(dfh) and not np.isnan(dfl):
-        msgs.append(f"📏 Distanza dai 52w: High {dfh:.1f}% | Low {dfl:.1f}%.")
+        msgs.append(f"📏 Distanza 52w: High {dfh:.1f}% | Low {dfl:.1f}%.")
 
     atr = float(last.get("ATR", np.nan))
     if not np.isnan(atr) and close:
         msgs.append(f"🌪️ ATR: {atr:.2f} ({atr/close*100:.1f}% del prezzo).")
 
-    sma_list = sorted([n for n in sma_list if f"SMA_{n}" in d.columns])
-    ema_list = sorted([n for n in ema_list if f"EMA_{n}" in d.columns])
-    if len(sma_list) >= 2:
-        fast, slow = sma_list[0], sma_list[-1]
-        typ, when = _last_cross(d[f"SMA_{fast}"], d[f"SMA_{slow}"])
+    # Ultimi cross
+    s_list = sorted([n for n in sma_list if f"SMA_{n}" in d.columns])
+    e_list = sorted([n for n in ema_list if f"EMA_{n}" in d.columns])
+    def _last_cross_msg(fast, slow, label):
+        typ, when = _last_cross(d[f"{label}_{fast}"], d[f"{label}_{slow}"])
         if typ != "none":
             emoji = "🟢" if typ == "bullish" else "🔴"
-            msgs.append(f"{emoji} Ultimo cross SMA {fast}/{slow}: {typ} in data {when.date()}.")
-    if len(ema_list) >= 2:
-        fast, slow = ema_list[0], ema_list[-1]
-        typ, when = _last_cross(d[f"EMA_{fast}"], d[f"EMA_{slow}"])
-        if typ != "none":
-            emoji = "🟢" if typ == "bullish" else "🔴"
-            msgs.append(f"{emoji} Ultimo cross EMA {fast}/{slow}: {typ} in data {when.date()}.")
+            msgs.append(f"{emoji} Ultimo cross {label} {fast}/{slow}: {typ} in data {getattr(when, 'date', lambda: when)()}.")
+
+    if len(s_list) >= 2:
+        _last_cross_msg(s_list[0], s_list[-1], "SMA")
+    if len(e_list) >= 2:
+        _last_cross_msg(e_list[0], e_list[-1], "EMA")
 
     gap = float(last.get("Gap_%", np.nan))
     if not np.isnan(gap):
