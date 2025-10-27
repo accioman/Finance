@@ -68,10 +68,10 @@ df_plot = df_ind.reset_index().rename(columns={"Date": "dt"}) if "Date" in df_in
 # =========================
 base = alt.Chart(df_plot).encode(x=alt.X("dt:T", title=""))
 
-price_line = alt.Line().mark_line().encode(
+price_line = alt.Chart(df_plot).mark_line().encode(
+    x=alt.X("dt:T", title=""),
     y=alt.Y("Close:Q", title="Prezzo")
 )
-
 layers = [price_line]
 
 # Aggiungi SMA/EMA selezionate
