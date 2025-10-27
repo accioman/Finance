@@ -170,6 +170,9 @@ bb_layer = alt.Chart(df_plot).mark_area(opacity=0.15).encode(
 price_chart = price_chart.properties(height=320).configure(
     padding={"top": 5, "left": 5, "right": 5, "bottom": 60}  # più spazio sotto
 )
+
+price_chart = price_chart.configure_view(clip=False) \
+    .configure_legend(clipHeight=0)
 st.altair_chart(price_chart, use_container_width=True)
 
 # =========
