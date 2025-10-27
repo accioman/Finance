@@ -74,20 +74,41 @@ price_line = alt.Chart(df_plot).mark_line().encode(
 )
 layers = [price_line]
 
-# Aggiungi SMA/EMA selezionate
+# SMA selezionate
 for n in sma_list:
-    if f"SMA_{n}" in df_plot.columns:
-        layers.append(alt.Chart(df_plot).mark_line().encode(y=f"SMA_{n}:Q", color=alt.value("#6b7280")).properties(title=None))
+    col = f"SMA_{n}"
+    if col in df_plot.columns:
+        layers.append(
+            alt.Chart(df_plot).mark_line().encode(
+                x="dt:T",
+                y=alt.Y(f"{col}:Q"),
+                color=alt.value("#6b7280")  # grigio
+            )
+        )
+
+# EMA selezionate
 for n in ema_list:
-    if f"EMA_{n}" in df_plot.columns:
-        layers.append(alt.Chart(df_plot).mark_line().encode(y=f"EMA_{n}:Q", color=alt.value("#a855f7")))
+    col = f"EMA_{n}"
+    if col in df_plot.columns:
+        layers.append(
+            alt.Chart(df_plot).mark_line().encode(
+                x="dt:T",
+                y=alt.Y(f"{col}:Q"),
+                color=alt.value("#a855f7")  # viola
+            )
+        )
 
-# Bollinger
+# Bollinger opzionali
 if show_bb and all(c in df_plot.columns for c in ["BB_low", "BB_up"]):
-    bb_band = alt.Chart(df_plot).mark_area(opacity=0.15).encode(y="BB_low:Q", y2="BB_up:Q")
-    layers.insert(0, bb_band)  # sotto alle linee
+    bb_band = alt.Chart(df_plot).mark_area(opacity=0.15).encode(
+        x="dt:T",
+        y="BB_low:Q",
+        y2="BB_up:Q"
+    )
+    layers.insert(0, bb_band)  # banda sotto le linee
 
-price_chart = alt.layer(*[base + l for l in layers]).properties(height=320).interactive()
+price_chart = alt.layer(*layers).properties(height=320).interactive()
+st.altair_chart(price_chart, use_container_width=True)
 
 st.subheader("Prezzo con SMA/EMA" + (" + Bollinger" if show_bb else ""))
 st.altair_chart(price_chart, use_container_width=True)
