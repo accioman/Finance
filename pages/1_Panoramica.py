@@ -1,6 +1,7 @@
 # pages/1_Panoramica.py — KPI, Alert, Suggerimenti (EUR) con autorefresh locale
 from __future__ import annotations
 import time
+import pandas as pd
 import streamlit as st
 from src.stats import compute_stats_tables
 from src.alerts import find_alerts
