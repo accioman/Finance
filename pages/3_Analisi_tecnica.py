@@ -86,16 +86,16 @@ df_plot = (
 axis_x = alt.Axis(
     title="",
     labelAngle=-30,
-    labelFlush=False,     # NON allineare al bordo (evita taglio)
-    labelOverlap=True,    # gestione overlap
-    tickCount="auto"
+    labelFlush=False,      # NON allineare al bordo (evita taglio)
+    labelOverlap=True      # gestione overlap
+    # (niente tickCount="auto": non valido)
 )
 legend_bottom = alt.Legend(
     title="Serie",
     orient="bottom",
     direction="horizontal",
     columns=4,
-    labelLimit=0,         # non troncare testo
+    labelLimit=1000,       # spazio ampio per i label
     symbolSize=120
 )
 
@@ -157,7 +157,7 @@ price_chart = (
     .properties(height=340)
     .configure(padding={"top": 8, "left": 8, "right": 8, "bottom": 80})
     .configure_view(clip=False)         # evita ritaglio
-    .configure_axis(labelLimit=0)       # nessun limite caratteri
+    .configure_axis(labelLimit=0)       # nessun limite caratteri etichette
     .configure_legend(orient="bottom")
     .interactive()
 )
