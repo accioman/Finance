@@ -19,7 +19,7 @@ def ensure_state():
     st.session_state.setdefault("upper", 12.0)
     st.session_state.setdefault("lower", 8.0)
     st.session_state.setdefault("auto_refresh", True)
-    st.session_state.setdefault("refresh_secs", 5)
+    st.session_state.setdefault("refresh_secs", 30)
 
     # Dati calcolati
     st.session_state.setdefault("df", None)

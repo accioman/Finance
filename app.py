@@ -36,7 +36,7 @@ with st.sidebar:
     st.session_state.lower = st.number_input("Soglia LOWER (%)", value=float(st.session_state.lower), step=1.0)
     st.session_state.auto_refresh = st.checkbox("Auto-refresh globale", value=st.session_state.auto_refresh)
     st.session_state.refresh_secs = st.number_input("Intervallo refresh (sec)",
-                                                    value=int(st.session_state.refresh_secs), step=1, min_value=2)
+                                                    value=int(st.session_state.refresh_secs), step=1, min_value=30)
     st.divider()
     st.markdown("### ℹ️ Glossario")
     st.markdown(glossary_md(), unsafe_allow_html=True)

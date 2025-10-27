@@ -24,7 +24,7 @@ with st.sidebar:
     upper = st.number_input("Soglia UPPER (%)", value=12.0, step=1.0)
     lower = st.number_input("Soglia LOWER (%)", value=8.0, step=1.0)
     auto_refresh = st.checkbox("Auto-refresh", value=False, help="Ricarica automaticamente ogni N secondi")
-    refresh_secs = st.number_input("Intervallo (sec)", value=60, step=10, min_value=10)
+    refresh_secs = st.number_input("Intervallo (sec)", value=60, step=10, min_value=30)
     run_btn = st.button("Aggiorna adesso")
 
 def _read_csv_to_tmp(uploaded):
