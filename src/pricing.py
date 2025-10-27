@@ -8,6 +8,20 @@ def _safe_float(x) -> Optional[float]:
         return float(x)
     except Exception:
         return None
+    
+def _get_prev_close(ticker: str) -> Optional[float]:
+    try:
+        t = yf.Ticker(ticker)
+        fi = getattr(t, "fast_info", None)
+        if fi and getattr(fi, "previous_close", None) is not None:
+            return _safe_float(fi.previous_close)
+        hist = t.history(period="5d")
+        if hist is not None and not hist.empty:
+            if len(hist["Close"]) >= 2:
+                return _safe_float(hist["Close"].iloc[-2])
+    except Exception:
+        pass
+    return None
 
 def get_last_price(ticker: str) -> Optional[float]:
     try:
@@ -61,39 +75,50 @@ def get_fx_to_eur(currency: Optional[str]) -> Optional[float]:
 
 def enrich_with_prices(df: pd.DataFrame, use_live: bool = False) -> pd.DataFrame:
     """
-    Restituisce colonne: Currency, Live Price, Price Used, FX_to_EUR, Price EUR, Purchase EUR.
-    Tutte le colonne nuove sono pandas Series (no ndarray) e allineate a df.index.
+    Restituisce colonne: Currency, Live Price, Price Used, FX_to_EUR,
+    Price EUR, Purchase EUR, Prev Close (native), Prev Close EUR,
+    Day_Delta (native), Day_Delta_% (pct), Day_Delta_EUR (per azione).
     """
     d = df.copy()
 
-    # --- Prezzi live e valute (liste -> Series) ---
-    live_prices = []
-    currencies = []
+    # --- Prezzi live/valute/prev close ---
+    live_prices, currencies, prev_closes = [], [], []
     for tk in d["Symbol"]:
         live = get_last_price(tk) if use_live else None
         cur  = get_currency(tk) or "EUR"
+        pc   = _get_prev_close(tk)
         live_prices.append(live)
         currencies.append(cur)
+        prev_closes.append(pc)
 
-    d["Live Price"]   = pd.Series(pd.to_numeric(live_prices, errors="coerce"), index=d.index, dtype="float64")
-    d["Currency"]     = pd.Series(currencies, index=d.index, dtype="object")
+    d["Live Price"] = pd.Series(pd.to_numeric(live_prices, errors="coerce"), index=d.index, dtype="float64")
+    d["Currency"]   = pd.Series(currencies, index=d.index, dtype="object")
+    d["Prev Close"] = pd.Series(pd.to_numeric(prev_closes, errors="coerce"), index=d.index, dtype="float64")
 
-    # --- Price Used: usa numerici + combine_first tra Series ---
+    # --- Price Used ---
     curr_series = pd.to_numeric(d["Current Price"], errors="coerce")
-    d["Price Used"]  = d["Live Price"].combine_first(curr_series)
+    d["Price Used"] = d["Live Price"].combine_first(curr_series)
 
-    # --- FX -> EUR come Series ---
+    # --- FX -> EUR ---
     fx_list = []
     for cur in d["Currency"]:
         fx = get_fx_to_eur(cur)
         fx_list.append(1.0 if fx is None else fx)
     d["FX_to_EUR"] = pd.Series(pd.to_numeric(fx_list, errors="coerce"), index=d.index).fillna(1.0)
 
-    # --- Prezzi in EUR (tutto come Series) ---
-    price_used_num   = pd.to_numeric(d["Price Used"], errors="coerce")
-    purchase_num     = pd.to_numeric(d["Purchase Price"], errors="coerce")
-    d["Price EUR"]    = pd.Series(price_used_num * d["FX_to_EUR"], index=d.index)
-    d["Purchase EUR"] = pd.Series(purchase_num * d["FX_to_EUR"], index=d.index)
+    # --- EUR ---
+    price_used_num = pd.to_numeric(d["Price Used"], errors="coerce")
+    purchase_num   = pd.to_numeric(d["Purchase Price"], errors="coerce")
+    prev_close_num = pd.to_numeric(d["Prev Close"], errors="coerce")
+
+    d["Price EUR"]     = pd.Series(price_used_num * d["FX_to_EUR"], index=d.index)
+    d["Purchase EUR"]  = pd.Series(purchase_num * d["FX_to_EUR"], index=d.index)
+    d["Prev Close EUR"]= pd.Series(prev_close_num * d["FX_to_EUR"], index=d.index)
+
+    # --- Delta giornaliero (per azione) in nativo + EUR ---
+    d["Day_Delta"]      = price_used_num - prev_close_num
+    d["Day_Delta_%"]    = (d["Day_Delta"] / prev_close_num * 100.0).replace([pd.NA, pd.NaT], 0.0)
+    d["Day_Delta_EUR"]  = d["Day_Delta"] * d["FX_to_EUR"]
 
     return d
 
