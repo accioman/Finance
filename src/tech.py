@@ -5,9 +5,6 @@ import yfinance as yf
 from typing import List, Tuple, Dict, Optional
 import streamlit as st
 
-# -----------------------
-# Helper sicuri
-# -----------------------
 def _safe_float(x) -> Optional[float]:
     try:
         return float(x)
@@ -28,9 +25,6 @@ def _parse_list(inp, default: List[int]) -> List[int]:
             pass
     return out or default
 
-# -----------------------
-# Dati storici (CACHE)
-# -----------------------
 @st.cache_data(show_spinner=False, ttl=300, max_entries=256)
 def get_history(symbol: str, period="1y", interval="1d") -> pd.DataFrame:
     try:
@@ -39,15 +33,11 @@ def get_history(symbol: str, period="1y", interval="1d") -> pd.DataFrame:
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        df = df.rename(columns=str.title)
-        df = df.dropna(how="all")
+        df = df.rename(columns=str.title).dropna(how="all")
         return df
     except Exception:
         return pd.DataFrame()
 
-# -----------------------
-# Indicatori
-# -----------------------
 def add_indicators(
     df: pd.DataFrame,
     sma=(20, 50, 200),
@@ -72,13 +62,13 @@ def add_indicators(
     close = d["Close"]; high = d["High"]; low = d["Low"]
     vol = d["Volume"].astype(float) if "Volume" in d.columns else pd.Series(index=d.index, dtype=float)
 
-    # SMA/EMA
+    # SMA / EMA
     for n in _parse_list(sma, [20, 50, 200]):
         d[f"SMA_{n}"] = close.rolling(window=n, min_periods=n).mean()
     for n in _parse_list(ema, [21, 50]):
         d[f"EMA_{n}"] = close.ewm(span=n, adjust=False).mean()
 
-    # RSI (standard + fast)
+    # RSI standard + fast
     def _rsi(series: pd.Series, length: int) -> pd.Series:
         delta = series.diff()
         gain = delta.clip(lower=0)
@@ -146,9 +136,6 @@ def add_indicators(
 
     return d
 
-# -----------------------
-# Cross + segnali sintetici
-# -----------------------
 def _last_cross(series_fast: pd.Series, series_slow: pd.Series) -> Tuple[str, pd.Timestamp]:
     s1 = series_fast - series_slow
     sign = np.sign(s1)
@@ -168,13 +155,15 @@ def summarize_signals(
     if d.empty or len(d) < 5:
         return msgs
 
-    last = d.iloc[-1]
-    close = float(last["Close"])
+    last_row = d.iloc[[-1]]         # DataFrame 1xN
+    close = float(last_row["Close"].iloc[0])
 
+    last = d.iloc[-1]               # Series (per lettura comoda)
     # Squeeze
     sq_on = bool(last.get("SQUEEZE_ON", False))
     sq_up = bool(last.get("SQUEEZE_OFF_UP", False))
     sq_dn = bool(last.get("SQUEEZE_OFF_DOWN", False))
+
     rsi_fast = float(last.get("RSI_fast", np.nan))
     vol_ma20 = float(last.get("Vol_MA20", np.nan)) if "Vol_MA20" in d.columns else np.nan
     vol = float(last.get("Volume", np.nan)) if "Volume" in d.columns else np.nan
@@ -275,43 +264,40 @@ def summarize_signals(
 
     return msgs
 
-# -----------------------
-# Tabella ultimo valore
-# -----------------------
 def latest_table(d: pd.DataFrame, sma_list: List[int], ema_list: List[int]) -> pd.DataFrame:
     if d.empty:
         return pd.DataFrame()
-    last = d.iloc[[-1]].copy()
-    close = float(last["Close"])
+    last_df = d.iloc[[-1]].copy()
+    close = float(last_df["Close"].iloc[0])
     rows: Dict[str, Dict[str, float]] = {"Close": {"Value": close, "Δ% vs Close": 0.0}}
 
     for n in sma_list:
         col = f"SMA_{n}"
-        if col in d.columns and not pd.isna(last[col].iloc[0]) and close:
-            v = float(last[col].iloc[0])
+        if col in d.columns and not pd.isna(last_df[col].iloc[0]) and close:
+            v = float(last_df[col].iloc[0])
             rows[f"SMA {n}"] = {"Value": v, "Δ% vs Close": (close / v - 1) * 100.0}
     for n in ema_list:
         col = f"EMA_{n}"
-        if col in d.columns and not pd.isna(last[col].iloc[0]) and close:
-            v = float(last[col].iloc[0])
+        if col in d.columns and not pd.isna(last_df[col].iloc[0]) and close:
+            v = float(last_df[col].iloc[0])
             rows[f"EMA {n}"] = {"Value": v, "Δ% vs Close": (close / v - 1) * 100.0}
 
     for label in ["52w_high", "52w_low"]:
-        if label in d.columns and not pd.isna(last[label].iloc[0]) and close:
-            v = float(last[label].iloc[0])
+        if label in d.columns and not pd.isna(last_df[label].iloc[0]) and close:
+            v = float(last_df[label].iloc[0])
             rows[label] = {"Value": v, "Δ% vs Close": (close / v - 1) * 100.0}
 
-    if "ATR" in d.columns and not pd.isna(last["ATR"].iloc[0]) and close:
-        v = float(last["ATR"].iloc[0])
+    if "ATR" in d.columns and not pd.isna(last_df["ATR"].iloc[0]) and close:
+        v = float(last_df["ATR"].iloc[0])
         rows["ATR"] = {"Value": v, "Δ% vs Close": v / close * 100.0}
 
-    if "RSI" in d.columns and not pd.isna(last["RSI"].iloc[0]):
-        v = float(last["RSI"].iloc[0])
+    if "RSI" in d.columns and not pd.isna(last_df["RSI"].iloc[0]):
+        v = float(last_df["RSI"].iloc[0])
         rows["RSI"] = {"Value": v, "Δ% vs Close": np.nan}
 
     for label in ["Vol_MA20", "Vol_MA50"]:
-        if label in d.columns and not pd.isna(last[label].iloc[0]):
-            rows[label] = {"Value": float(last[label].iloc[0]), "Δ% vs Close": np.nan}
+        if label in d.columns and not pd.isna(last_df[label].iloc[0]):
+            rows[label] = {"Value": float(last_df[label].iloc[0]), "Δ% vs Close": np.nan}
 
     out = pd.DataFrame(rows).T
     return out.reset_index(names=["Metric"])

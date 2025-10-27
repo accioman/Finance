@@ -87,8 +87,7 @@ df_plot = (
     if "Date" in df_ind.columns
     else df_ind.reset_index().rename(columns={df_ind.index.name or "index": "dt"})
 )
-df_plot["dt"] = pd.to_datetime(df_plot["dt"], errors="coerce")
-df_plot["dt"] = df_plot["dt"].dt.tz_localize(None)
+df_plot["dt"] = pd.to_datetime(df_plot["dt"], errors="coerce").dt.tz_localize(None)
 df_plot = df_plot.dropna(subset=["dt"]).sort_values("dt")
 if df_plot.empty:
     st.error("Problema sul campo data: impossibile costruire la serie temporale.")
@@ -125,9 +124,7 @@ legend_bottom = alt.Legend(title=None, orient="bottom", direction="horizontal", 
 # =========================
 def _series_frame(df: pd.DataFrame, col: str, label: str):
     if col in df.columns:
-        sr = df[["dt", col]].copy()
-        sr = sr.rename(columns={col: "value"}).assign(series=label)
-        # evitiamo colonne totalmente NaN
+        sr = df[["dt", col]].copy().rename(columns={col: "value"}).assign(series=label)
         if sr["value"].notna().any():
             return sr
     return None
@@ -139,21 +136,17 @@ if base_close is not None:
 
 for n in sma_list:
     fr = _series_frame(df_plot, f"SMA_{n}", f"SMA {n}")
-    if fr is not None:
-        series_frames.append(fr)
+    if fr is not None: series_frames.append(fr)
 
 for n in ema_list:
     fr = _series_frame(df_plot, f"EMA_{n}", f"EMA {n}")
-    if fr is not None:
-        series_frames.append(fr)
+    if fr is not None: series_frames.append(fr)
 
 if show_kc:
     for col, label in [("KC_low", "KC low"), ("KC_up", "KC up"), ("KC_mid", "KC mid")]:
         fr = _series_frame(df_plot, col, label)
-        if fr is not None:
-            series_frames.append(fr)
+        if fr is not None: series_frames.append(fr)
 
-# Se per qualche motivo non c'è nessuna serie valida, evitiamo errore
 if not series_frames:
     series_frames = [df_plot[["dt","Close"]].rename(columns={"Close":"value"}).assign(series="Close")]
 
@@ -170,25 +163,19 @@ price_lines = alt.Chart(price_long).mark_line().encode(
 
 bands = []
 if show_kc and {"KC_low","KC_up"}.issubset(df_plot.columns):
-    bands.append(
-        alt.Chart(df_plot).mark_area(opacity=0.12).encode(
-            x="dt:T", y="KC_low:Q", y2="KC_up:Q"
-        )
-    )
+    bands.append(alt.Chart(df_plot).mark_area(opacity=0.12).encode(x="dt:T", y="KC_low:Q", y2="KC_up:Q"))
 if show_bb and {"BB_low","BB_up"}.issubset(df_plot.columns):
-    bands.append(
-        alt.Chart(df_plot).mark_area(opacity=0.15).encode(
-            x="dt:T", y="BB_low:Q", y2="BB_up:Q"
-        )
-    )
+    bands.append(alt.Chart(df_plot).mark_area(opacity=0.15).encode(x="dt:T", y="BB_low:Q", y2="BB_up:Q"))
 
 # Candele (opzionale)
 if use_candles and {"Open","High","Low","Close"}.issubset(df_plot.columns):
     up = alt.value("#16a34a"); dn = alt.value("#ef4444")
     rule = alt.Chart(df_plot).mark_rule().encode(
         x="dt:T", y="Low:Q", y2="High:Q", color=alt.condition("datum.Open <= datum.Close", up, dn),
-        tooltip=[alt.Tooltip("dt:T", title="Data"), alt.Tooltip("Open:Q", format=".2f"),
-                 alt.Tooltip("High:Q", format=".2f"), alt.Tooltip("Low:Q", format=".2f"),
+        tooltip=[alt.Tooltip("dt:T", title="Data"),
+                 alt.Tooltip("Open:Q", format=".2f"),
+                 alt.Tooltip("High:Q", format=".2f"),
+                 alt.Tooltip("Low:Q", format=".2f"),
                  alt.Tooltip("Close:Q", format=".2f")]
     )
     bar = alt.Chart(df_plot).mark_bar(size=5).encode(
@@ -207,10 +194,10 @@ try:
         .configure_legend(orient="bottom")
         .interactive()
     )
-    st.altair_chart(price_chart, use_container_width=True)
+    st.altair_chart(price_chart, width="stretch")
 except Exception as e:
     st.warning(f"Render Altair non riuscito ({type(e).__name__}). Mostro un grafico semplificato.")
-    st.line_chart(df_plot.set_index("dt")["Close"])
+    st.line_chart(df_plot.set_index("dt")["Close"], width="stretch")
 
 # ========= RSI =========
 st.subheader("RSI")
@@ -222,7 +209,7 @@ rsi_line = alt.Chart(df_plot).mark_line().encode(
 )
 rsi_thresh = pd.DataFrame({"y": [30, 70], "soglia": ["RSI 30", "RSI 70"]})
 rsi_rules = alt.Chart(rsi_thresh).mark_rule().encode(y="y:Q", color=alt.Color("soglia:N", title="Soglie RSI"))
-st.altair_chart((rsi_line + rsi_rules).properties(height=190).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), use_container_width=True)
+st.altair_chart((rsi_line + rsi_rules).properties(height=190).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), width="stretch")
 
 # ========= MACD =========
 st.subheader("MACD")
@@ -242,7 +229,7 @@ macd_hist = alt.Chart(df_plot).transform_calculate(
     y="MACD_hist:Q",
     color=alt.Color("sign:N", title="Istogramma MACD", scale=alt.Scale(domain=["≥ 0","< 0"]))
 ).properties(height=170)
-st.altair_chart((macd_hist + macd_lines).configure(padding={"bottom": 50}).configure_view(clip=False).interactive(), use_container_width=True)
+st.altair_chart((macd_hist + macd_lines).configure(padding={"bottom": 50}).configure_view(clip=False).interactive(), width="stretch")
 
 # ========= Volumi =========
 if show_volume and "Volume" in df_plot.columns:
@@ -266,7 +253,7 @@ if show_volume and "Volume" in df_plot.columns:
             color=alt.Color("series:N", title="Medie Volume")
         )
         vol_layers.append(vol_lines)
-    st.altair_chart(alt.layer(*vol_layers).properties(height=190).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), use_container_width=True)
+    st.altair_chart(alt.layer(*vol_layers).properties(height=190).configure(padding={"bottom": 40}).configure_view(clip=False).interactive(), width="stretch")
 
 # ========= Segnali + Tabella =========
 st.subheader("Segnali sintetici")
@@ -284,10 +271,10 @@ if not tab.empty:
                 return "color: green;" if v > 0 else ("color: red;" if v < 0 else "")
             except Exception:
                 return ""
-        sty = df.style.applymap(colorize, subset=["Δ% vs Close"])
+        sty = df.style.map(colorize, subset=pd.IndexSlice[:, ["Δ% vs Close"]])
         sty = sty.format({"Value": "{:.4f}", "Δ% vs Close": "{:.2f}%"})
         return sty
-    st.dataframe(_styler(tab), use_container_width=True, height=280)
+    st.dataframe(_styler(tab), width="stretch", height=280)
 else:
     st.caption("Nessun dato disponibile per la tabella.")
 
