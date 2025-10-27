@@ -153,8 +153,19 @@ rsi_band_30 = alt.Chart(pd.DataFrame({"y": [30]})).mark_rule().encode(y="y:Q", c
 rsi_band_70 = alt.Chart(pd.DataFrame({"y": [70]})).mark_rule().encode(y="y:Q", color=alt.value("#22c55e"))
 
 st.subheader("RSI")
-st.altair_chart((rsi_chart + rsi_band_30 + rsi_band_70).interactive(), use_container_width=True)
 
+rsi_line = alt.Chart(df_plot).mark_line().encode(
+    x="dt:T", y=alt.Y("RSI:Q", title="RSI"), color=alt.value("#2563eb")  # blu fisso
+)
+
+# soglie con legenda
+rsi_thresh = pd.DataFrame({"y":[30,70], "soglia":["RSI 30","RSI 70"]})
+rsi_rules = alt.Chart(rsi_thresh).mark_rule().encode(
+    y="y:Q",
+    color=alt.Color("soglia:N", title="Soglie RSI")
+)
+
+st.altair_chart((rsi_line + rsi_rules).properties(height=180).interactive(), use_container_width=True)
 # =========
 #   MACD
 # =========
@@ -167,20 +178,58 @@ macd_hist = alt.Chart(df_plot).mark_bar().encode(
 ).properties(height=160)
 
 st.subheader("MACD")
-st.altair_chart((macd_hist + macd_line + macd_sig_line).interactive(), use_container_width=True)
+
+# linee MACD/MACD_signal con legenda
+macd_long = pd.concat([
+    df_plot[["dt","MACD"]].rename(columns={"MACD":"value"}).assign(series="MACD"),
+    df_plot[["dt","MACD_signal"]].rename(columns={"MACD_signal":"value"}).assign(series="MACD signal"),
+], ignore_index=True)
+
+macd_lines = alt.Chart(macd_long).mark_line().encode(
+    x="dt:T",
+    y=alt.Y("value:Q", title="MACD"),
+    color=alt.Color("series:N", title="Linee MACD")
+)
+
+# istogramma con legenda del segno
+macd_hist = alt.Chart(df_plot).transform_calculate(
+    sign="datum.MACD_hist >= 0 ? '≥ 0' : '< 0'"
+).mark_bar().encode(
+    x="dt:T",
+    y="MACD_hist:Q",
+    color=alt.Color("sign:N", title="Istogramma MACD", scale=alt.Scale(domain=["≥ 0","< 0"]))
+).properties(height=160)
+
+st.altair_chart((macd_hist + macd_lines).interactive(), use_container_width=True)
 
 # =========
 #   Volumi
 # =========
 if show_volume and "Volume" in df_plot.columns:
-    vol_bar = alt.Chart(df_plot).mark_bar().encode(x="dt:T", y=alt.Y("Volume:Q", title="Volume"))
-    overlays = [vol_bar]
-    if "Vol_MA20" in df_plot.columns:
-        overlays.append(alt.Chart(df_plot).mark_line().encode(x="dt:T", y="Vol_MA20:Q", color=alt.value("#f59e0b")))
-    if "Vol_MA50" in df_plot.columns:
-        overlays.append(alt.Chart(df_plot).mark_line().encode(x="dt:T", y="Vol_MA50:Q", color=alt.value("#9333ea")))
     st.subheader("Volumi")
-    st.altair_chart(alt.layer(*overlays).properties(height=180).interactive(), use_container_width=True)
+
+    vol_bar = alt.Chart(df_plot).mark_bar().encode(
+        x="dt:T",
+        y=alt.Y("Volume:Q", title="Volume"),
+        color=alt.value("#9ca3af")  # grigio per le barre, niente legenda
+    )
+
+    vol_series = []
+    if "Vol_MA20" in df_plot.columns:
+        vol_series.append(df_plot[["dt","Vol_MA20"]].rename(columns={"Vol_MA20":"value"}).assign(series="Vol MA20"))
+    if "Vol_MA50" in df_plot.columns:
+        vol_series.append(df_plot[["dt","Vol_MA50"]].rename(columns={"Vol_MA50":"value"}).assign(series="Vol MA50"))
+
+    if vol_series:
+        vol_long = pd.concat(vol_series, ignore_index=True)
+        vol_lines = alt.Chart(vol_long).mark_line().encode(
+            x="dt:T",
+            y="value:Q",
+            color=alt.Color("series:N", title="Medie Volume")
+        )
+        st.altair_chart((vol_bar + vol_lines).properties(height=180).interactive(), use_container_width=True)
+    else:
+        st.altair_chart(vol_bar.properties(height=180).interactive(), use_container_width=True)
 
 # =========
 #   Segnali + Tabella
